@@ -1,0 +1,88 @@
+---
+title: "NBA Data Description"
+author: "Ben Moolman, Craig Orman, Ethan Pross"
+output: pdf_document
+---
+
+```{r, warning = FALSE, message = FALSE}
+library(dplyr)
+library(tidyverse)
+library(knitr)
+
+original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv")
+# original_tbl$COMMENT[original_tbl$COMMENT == ""] <- NA
+# original_tbl$COMMENT <- factor(original_tbl$COMMENT)
+
+original_tbl <- mutate(original_tbl,
+                       START_POSITION = na_if(START_POSITION, ""),
+                       START_POSITION = factor(original_tbl$START_POSITION),
+                       COMMENT = na_if(COMMENT, ""),
+                       COMMENT = factor(original_tbl$COMMENT),
+                       MIN = na_if(MIN, ""),
+                       )
+
+# Unknown variables requiring decoding
+# -min
+
+```
+
+## Data Set Description:
+
+  + There are 30 columns and 32,385 rows. 7 columns are identifiers, 1 column is a row index, 2 are characteristic and comment columns, and then we have 20 numerical statistic columns.
+  
+  + Each row significes a unique tuple of (game, player), that is to say there is a row for stats of each player in every game. 
+  
+  + There are `r length(unique(original_tbl$GAME_ID))` unique games, `r length(unique(original_tbl$TEAM_ID))` unique teams, and `r length(unique(original_tbl$PLAYER_ID))` unique players. 7 of the 
+
+  + There are 5984 rows where all the columns are NA due to the player being out for some reason listed in the comments. No missing values in identifiers. 
+  
+  + Presumably, missing values in the starting position column refer to a non-starter player.
+  
+## Prior Analysis on this dataset
+
+  + There appears to be one analysis submitted for this Kaggle dataset, [Done by Adam Briggs](https://www.kaggle.com/code/adambriggs/nba-exploratory-data-analysis), they seem to have done mostly visuals and descriptive statistics, looking at best player on the team, and top performing player in various metrics. 
+  
+  + College basketball analytics is a very common field though, and there are entire websites dedictated to it such as one by [Evan Miyakawa](https://evanmiya.com/) who launched their website as part of a PhD program with Baylor. Usually, analytics attempt to gain an edge in the industry by identifying undervalued players or by predicting the outcomes of games.
+  
+## Important notes
+
+  + Missing data sampling can be done on games where the player did not play, using priors to consider the effect of previous games and the team.
+
+| Variable              | Description |
+|-----------------      |-------------|
+| **GAME_ID**           | Unique Identifier of the Game. |
+| **TEAM_ID**           | Unique Identifier of the Team. For Each GAME_ID there are only two TEAM_ID. |
+| **TEAM_ABBREVIATION** | Abbreviation of the Team (e.g. GWS - Golden State Warriors). |
+| **TEAM_CITY**         |  NA |
+| **PLAYER_ID**         | Unique Identifier of the Player. |
+| **PLAYER_NAME**       | Complete Name (Name and Surname) of the Player who played the game. |
+| **NICKNAME**          | Nickname of the Player who played the game. |
+| **START_POSITION**    | Position in which the player started the game (If populated, the player started the game). |
+| **COMMENT**           |  NA |
+| **MIN**               | Number of minutes in which the player played the game. |
+| **FGM**               | Number of Field Goals (both 2 and 3 Points) Made by the player in the game. |
+| **FGA**               | Number of Field Goals (both 2 and 3 Points) Attempted by the player in the game. |
+| **FG_PCT**            | Percentage of Field Goals (both 2 and 3 Points) by the player in the game. |
+| **FG3M**              | Number of 3 Points Made by the player in the game. |
+| **FG3A**              | Number of 3 Points Attempted by the player in the game. |
+| **FG3_PCT**           | Percentage of 3 Points by the player in the game. |
+| **FTM**               | Number of Free Throws Made by the player in the game. |
+| **FTA**               | Number of Free Throws Attempted Made by the player in the game. |
+| **FT_PCT**            | Percentage of Free Throws by the player in the game. |
+| **OREB**              | Number of Offensive Rebounds reached by the player in the single game. |
+| **DREB**              | Number of Defensive Rebounds reached by the player in the single game. |
+| **REB**               | Number of Total Rebounds (Defensive and Offensive Rebounds) reached by the player in the single game. |
+| **AST**               | Number of Assists done by the player in the single game. |
+| **STL**               | Number of Steals done by the player in the single game. |
+| **BLK**               | Number of Blocks done by the player in the single game. |
+| **TO**                | Number of Turnovers done by the player in the single game. |
+| **PF**                | Number of Personal Fouls done by the player in the single game. |
+| **PTS**               | Number of Points done by the player in the single game. |
+| **PLUS_MINUS**        | Number of Plus Minus done by the player in the single game. |
+
+
+```{r}
+summary(original_tbl)
+```
+
+
