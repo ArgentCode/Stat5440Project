@@ -4,10 +4,11 @@ author: "Ben Moolman, Craig Orman, Ethan Pross"
 output: pdf_document
 ---
 
-```{r, warning = FALSE, message = FALSE}
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
 library(dplyr)
 library(tidyverse)
 library(knitr)
+library(skimr)
 
 original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv")
 # original_tbl$COMMENT[original_tbl$COMMENT == ""] <- NA
@@ -47,6 +48,20 @@ original_tbl <- mutate(original_tbl,
 ## Important notes
 
   + Missing data sampling can be done on games where the player did not play, using priors to consider the effect of previous games and the team.
+  
+```{r, echo = FALSE}
+# summary(original_tbl[,9:30])
+temp <- skim(original_tbl[,12:30])
+kable(temp[,c(2,3,5,6)])
+```
+
+Lets take a look at some common interests
+
+```{r}
+# Comes out as all NAs for some reason
+# cor(original_tbl[,12:30], method = "pearson")
+```
+
 
 | Variable              | Description |
 |-----------------      |-------------|
@@ -79,10 +94,3 @@ original_tbl <- mutate(original_tbl,
 | **PF**                | Number of Personal Fouls done by the player in the single game. |
 | **PTS**               | Number of Points done by the player in the single game. |
 | **PLUS_MINUS**        | Number of Plus Minus done by the player in the single game. |
-
-
-```{r}
-summary(original_tbl)
-```
-
-
