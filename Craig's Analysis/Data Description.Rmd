@@ -43,16 +43,33 @@ original_tbl <- mutate(original_tbl,
   
   + Presumably, missing values in the starting position column refer to a non-starter player.
   
+| Variable              | Description |
+|-----------------      |-------------|
+| **GAME_ID**           | Unique Identifier of the Game. |
+| **TEAM_ID**           | Unique Identifier of the Team. For Each GAME_ID there are only two TEAM_ID. |
+| **PLAYER_ID**         | Unique Identifier of the Player. |
+| **FGA**               | Number of Field Goals (both 2 and 3 Points) Attempted by the player in the game. |
+| **FG_PCT**            | Percentage of Field Goals (both 2 and 3 Points) by the player in the game. |
+| **FG3A**              | Number of 3 Points Attempted by the player in the game. |
+| **FG3_PCT**           | Percentage of 3 Points by the player in the game. |
+| **REB**               | Number of Total Rebounds (Defensive and Offensive Rebounds) reached by the player in the single game. |
+| **AST**               | Number of Assists done by the player in the single game. |
+| **PTS**               | Number of Points done by the player in the single game. |
+  
 ## Prior Analysis on this dataset
 
   + There appears to be one analysis submitted for this Kaggle dataset, [Done by Adam Briggs](https://www.kaggle.com/code/adambriggs/nba-exploratory-data-analysis), they seem to have done mostly visuals and descriptive statistics, looking at best player on the team, and top performing player in various metrics. 
   
-  + College basketball analytics is a very common field though, and there are entire websites dedictated to it such as one by [Evan Miyakawa](https://evanmiya.com/) who launched their website as part of a PhD program with Baylor. Usually, analytics attempt to gain an edge in the industry by identifying undervalued players or by predicting the outcomes of games.
+  + Basketball analytics is a very common field though, and there are entire websites dedictated to it such as one by [Evan Miyakawa](https://evanmiya.com/) who launched their website as part of a PhD program with Baylor. Usually, analytics attempt to gain an edge in the industry by identifying undervalued players or by predicting the outcomes of games.
   
 ## Important notes
 
   + Missing data sampling can be done on games where the player did not play, using priors to consider the effect of previous games and the team.
   
+  + Data Analysis is on the raw data. We will be focusing on starting players.
+  
+  
+  CRAIGS NOTE: Subset data on starters only. 
 ```{r, echo = FALSE}
 temp <- skim(original_tbl[,12:30])
 colnames(temp) <- c("skim_type", "Variable", "Missing",  "complete_rate", "Mean",  "SD",  "numeric.p0", "numeric.p25",  "numeric.p50", "numeric.p75", "numeric.p100", "numeric.hist")
@@ -75,6 +92,9 @@ par(mfrow=c(1,1))
 corrplot(correlation) # colorful number
 ```
 
+## Sampling models
+
+  + Two variables of interest to predict are Field Goal Attempts and Field Goal Percent. Given below, we will attempt to model these with the beta and binomial respectively.
 ```{r}
 par(mfrow=c(2,2))
 y1 = 2600
@@ -85,7 +105,9 @@ hist(original_tbl$FG_PCT[original_tbl$START_POSITION != ""], breaks = 20, ylim=c
 hist(rbeta(12300, 7, 7), xlim=c(0,1), ylim=c(0, y2), main="Beta(7,7) Approx",  xlab= "Samples")
 ```
 
+\pagebreak
 
+# Appendix
 
 | Variable              | Description |
 |-----------------      |-------------|
