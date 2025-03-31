@@ -29,7 +29,7 @@ original_tbl = original_tbl[original_tbl$START_POSITION != "",]
 
 ```
 
-## Data Set Description:
+## Data Set Description/ Exploratory Data Analysis:
 
   + Obtained from the Kaggle Dataset [NBA Boxscore - Season 2023 / 2024 by Alberto Filosa](https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download)[^1]
   
@@ -44,6 +44,10 @@ original_tbl = original_tbl[original_tbl$START_POSITION != "",]
   + There is no missing data because we are only analyzing rows where the player was a starter, and therefore always played and stats were recorded.
   
   + Presumably, missing values in the starting position column refer to a non-starter player.
+  
+  + Most of the numeric fields are right skewed
+  
+  + FGA follows a binomial but with a heavier right tail
   
 ```{r, echo=FALSE}
 df <- data.frame(
@@ -64,38 +68,30 @@ df <- data.frame(
 )
 kable(df)
 ```
+  
+## Important notes
 
+  + Data Analysis is on the raw data. We will be focusing on starting players.
+  
+```{r, echo = FALSE}
+temp <- skim(original_tbl[,c(13,14,15, 16, 17, 23, 24, 29)])
+colnames(temp) <- c("skim_type", "Variable", "Missing",  "complete_rate", "Mean",  "SD",  "Min", "numeric.p25",  "Median", "numeric.p75", "Max", "numeric.hist")
+kable(temp[,c(2,3,5,6,9, 7, 11)])
+```
 ## Prior Analysis on this dataset
 
   + There appears to be one analysis submitted for this Kaggle dataset, [Done by Adam Briggs](https://www.kaggle.com/code/adambriggs/nba-exploratory-data-analysis), they seem to have done mostly visuals and descriptive statistics, looking at best player on the team, and top performing player in various metrics. 
   
-  + Basketball analytics is a very common field though, and there are entire websites dedictated to it such as one by [Evan Miyakawa](https://evanmiya.com/) who launched their website as part of a PhD program with Baylor. Usually, analytics attempt to gain an edge in the industry by identifying undervalued players or by predicting the outcomes of games.
+  + Basketball analytics is a very common field though, and there are entire websites dedictated to it such as one by [Evan Miyakawa](https://evanmiya.com/), who launched their website as part of a PhD program with Baylor. Usually, analytics attempt to gain an edge in the industry by identifying undervalued players or by predicting the outcomes of games.
   
-## Important notes
-
-  + Missing data sampling can be done on games where the player did not play, using priors to consider the effect of previous games and the team.
-  
-  + Data Analysis is on the raw data. We will be focusing on starting players.
-  
-```{r, echo = FALSE}
-temp <- skim(original_tbl[,12:30])
-colnames(temp) <- c("skim_type", "Variable", "Missing",  "complete_rate", "Mean",  "SD",  "Min", "numeric.p25",  "Median", "numeric.p75", "Max", "numeric.hist")
-kable(temp[,c(2,3,5,6,9, 7, 11)])
-```
-
-## Exploratory Data Analysis
-
-  + Most of the numeric fields are right skewed
-  
-  + FGA follows a binomial but with a heavier right tail
-
 ## Sampling models
 
   + Two variables of interest to predict are Field Goal Attempts and Field Goal Percent. Given below, we will attempt to model these with the beta and binomial respectively.
   
-```{r}
+```{r, echo=FALSE}
+set.seed(45208937)
 par(mfrow=c(2,2))
-y1 = 2600
+y1 = 2500
 hist(original_tbl$FGA[original_tbl$START_POSITION != ""], breaks = 20, xlim=c(0,40), ylim = c(0, y1), main="FGA", xlab= "Field Goals Attempted")
 hist(rbinom(12300, 50, 0.2), xlim=c(0,40), ylim = c(0, y1), main="Binom(50, 0.2) Approx",  xlab= "Samples")
 y2 = 2500
