@@ -29,13 +29,15 @@ original_tbl <- mutate(original_tbl,
 
 ## Data Set Description:
 
-  + Obtained from the Kaggle Dataset [NBA Boxscore - Season 2023 / 2024 by Alberto Filosa](https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download)
+  + Obtained from the Kaggle Dataset [NBA Boxscore - Season 2023 / 2024 by Alberto Filosa](https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download)[^1]
+  
+  [^1]: NBA Boxscore - Season 2023 / 2024 by Alberto Filosa, https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download
 
   + There are 30 columns and 32,385 rows. 7 columns are identifiers, 1 column is a row index, 2 are characteristic and comment columns, and then we have 20 numerical statistic columns.
   
   + Each row significes a unique tuple of (game, player), that is to say there is a row for stats of each player in every game. 
   
-  + There are `r length(unique(original_tbl$GAME_ID))` unique games, `r length(unique(original_tbl$TEAM_ID))` unique teams, and `r length(unique(original_tbl$PLAYER_ID))` unique players. 7 of the 
+  + There are `r length(unique(original_tbl$GAME_ID))` unique games, `r length(unique(original_tbl$TEAM_ID))` unique teams, and `r length(unique(original_tbl$PLAYER_ID))` unique players.
 
   + There are 5984 rows where all the columns are NA due to the player being out for some reason listed in the comments. No missing values in identifiers. 
   
@@ -52,12 +54,17 @@ original_tbl <- mutate(original_tbl,
   + Missing data sampling can be done on games where the player did not play, using priors to consider the effect of previous games and the team.
   
 ```{r, echo = FALSE}
-# summary(original_tbl[,9:30])
 temp <- skim(original_tbl[,12:30])
+colnames(temp) <- c("skim_type", "Variable", "Missing",  "complete_rate", "Mean",  "SD",  "numeric.p0", "numeric.p25",  "numeric.p50", "numeric.p75", "numeric.p100", "numeric.hist")
 kable(temp[,c(2,3,5,6)])
 ```
 
-Lets take a look at some common interests
+## Exploratory Data Analysis
+
+  + Most of the numeric fields are right skewed
+  
+  + FGA follows a binomial but with a heavier right tail
+  
 
 ```{r}
 library(corrplot)
@@ -67,6 +74,14 @@ correlation = cor(no_na_numerics_tbl, method = "pearson")
 par(mfrow=c(1,1))
 corrplot(correlation) # colorful number
 ```
+
+```{r}
+par(mfrow=c(1,3))
+hist(original_tbl$FGA[original_tbl$START_POSITION != ""], breaks = 20, main="FGA", xlab= "Field Goals Attempted")
+hist(original_tbl$FG_PCT[original_tbl$START_POSITION != ""], breaks = 20, main="FG_pct",  xlab= "Field Goal Percent")
+hist(rbinom(12300, 50, 0.2), xlim=c(0,40), main="Binom Approx",  xlab= "Samples")
+```
+
 
 
 | Variable              | Description |
