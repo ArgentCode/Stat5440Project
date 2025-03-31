@@ -29,6 +29,8 @@ original_tbl <- mutate(original_tbl,
 
 ## Data Set Description:
 
+  + Obtained from the Kaggle Dataset [NBA Boxscore - Season 2023 / 2024 by Alberto Filosa](https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download)
+
   + There are 30 columns and 32,385 rows. 7 columns are identifiers, 1 column is a row index, 2 are characteristic and comment columns, and then we have 20 numerical statistic columns.
   
   + Each row significes a unique tuple of (game, player), that is to say there is a row for stats of each player in every game. 
@@ -58,8 +60,12 @@ kable(temp[,c(2,3,5,6)])
 Lets take a look at some common interests
 
 ```{r}
+library(corrplot)
 # Comes out as all NAs for some reason
-# cor(original_tbl[,12:30], method = "pearson")
+no_na_numerics_tbl = na.omit(original_tbl[,12:30])
+correlation = cor(no_na_numerics_tbl, method = "pearson")
+par(mfrow=c(1,1))
+corrplot(correlation) # colorful number
 ```
 
 
