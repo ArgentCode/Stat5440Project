@@ -79,10 +79,10 @@ corrplot(correlation) # colorful number
 par(mfrow=c(2,2))
 y1 = 2600
 hist(original_tbl$FGA[original_tbl$START_POSITION != ""], breaks = 20, xlim=c(0,40), ylim = c(0, y1), main="FGA", xlab= "Field Goals Attempted")
-hist(rbinom(12300, 50, 0.2), xlim=c(0,40), ylim = c(0, y1), main="Binom Approx",  xlab= "Samples")
+hist(rbinom(12300, 50, 0.2), xlim=c(0,40), ylim = c(0, y1), main="Binom(50, 0.2) Approx",  xlab= "Samples")
 y2 = 2500
 hist(original_tbl$FG_PCT[original_tbl$START_POSITION != ""], breaks = 20, ylim=c(0, y2), main="FG_pct",  xlab= "Field Goal Percent")
-hist(rbeta(12300, 7, 7), xlim=c(0,1), ylim=c(0, y2), main="Beta Approx",  xlab= "Samples")
+hist(rbeta(12300, 7, 7), xlim=c(0,1), ylim=c(0, y2), main="Beta(7,7) Approx",  xlab= "Samples")
 ```
 
 
