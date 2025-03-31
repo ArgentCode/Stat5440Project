@@ -22,6 +22,8 @@ original_tbl <- mutate(original_tbl,
                        MIN = na_if(MIN, ""),
                        )
 
+original_tbl = original_tbl[original_tbl$START_POSITION != "",]
+
 # Unknown variables requiring decoding
 # -min
 
@@ -33,29 +35,36 @@ original_tbl <- mutate(original_tbl,
   
   [^1]: NBA Boxscore - Season 2023 / 2024 by Alberto Filosa, https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download
 
-  + There are 30 columns and 32,385 rows. 7 columns are identifiers, 1 column is a row index, 2 are characteristic and comment columns, and then we have 20 numerical statistic columns.
+  + There are 30 columns and `r nrow(original_tbl)` rows. 7 columns are identifiers, 1 column is a row index, 2 are characteristic and comment columns, and then we have 20 numerical statistic columns.
   
   + Each row significes a unique tuple of (game, player), that is to say there is a row for stats of each player in every game. 
   
   + There are `r length(unique(original_tbl$GAME_ID))` unique games, `r length(unique(original_tbl$TEAM_ID))` unique teams, and `r length(unique(original_tbl$PLAYER_ID))` unique players.
-
-  + There are 5984 rows where all the columns are NA due to the player being out for some reason listed in the comments. No missing values in identifiers. 
+  
+  + There is no missing data because we are only analyzing rows where the player was a starter, and therefore always played and stats were recorded.
   
   + Presumably, missing values in the starting position column refer to a non-starter player.
   
-| Variable              | Description |
-|-----------------      |-------------|
-| **GAME_ID**           | Unique Identifier of the Game. |
-| **TEAM_ID**           | Unique Identifier of the Team. For Each GAME_ID there are only two TEAM_ID. |
-| **PLAYER_ID**         | Unique Identifier of the Player. |
-| **FGA**               | Number of Field Goals (both 2 and 3 Points) Attempted by the player in the game. |
-| **FG_PCT**            | Percentage of Field Goals (both 2 and 3 Points) by the player in the game. |
-| **FG3A**              | Number of 3 Points Attempted by the player in the game. |
-| **FG3_PCT**           | Percentage of 3 Points by the player in the game. |
-| **REB**               | Number of Total Rebounds (Defensive and Offensive Rebounds) reached by the player in the single game. |
-| **AST**               | Number of Assists done by the player in the single game. |
-| **PTS**               | Number of Points done by the player in the single game. |
-  
+```{r, echo=FALSE}
+df <- data.frame(
+  Variable = c("Game_ID", "Team_ID", "Player_ID", "FGA", "FG_PCT", 
+               "FG3A", "FG3_PCT", "REB", "AST", "PTS"),
+  Description = c(
+    "Unique Identifier of the Game.",
+    "Unique Identifier of the Team. For Each GAME_ID there are only two TEAM_ID.",
+    "Unique Identifier of the Player.",
+    "Number of Field Goals (both 2 and 3 Points) Attempted by the player in the game.",
+    "Percentage of Field Goals (both 2 and 3 Points) by the player in the game.",
+    "Number of 3 Points Attempted by the player in the game.",
+    "Percentage of 3 Points by the player in the game.",
+    "Number of Total Rebounds (Defensive and Offensive Rebounds) reached by the player in the single game.",
+    "Number of Assists done by the player in the single game.",
+    "Number of Points done by the player in the single game."
+  )
+)
+kable(df)
+```
+
 ## Prior Analysis on this dataset
 
   + There appears to be one analysis submitted for this Kaggle dataset, [Done by Adam Briggs](https://www.kaggle.com/code/adambriggs/nba-exploratory-data-analysis), they seem to have done mostly visuals and descriptive statistics, looking at best player on the team, and top performing player in various metrics. 
@@ -68,12 +77,10 @@ original_tbl <- mutate(original_tbl,
   
   + Data Analysis is on the raw data. We will be focusing on starting players.
   
-  
-  CRAIGS NOTE: Subset data on starters only. 
 ```{r, echo = FALSE}
 temp <- skim(original_tbl[,12:30])
-colnames(temp) <- c("skim_type", "Variable", "Missing",  "complete_rate", "Mean",  "SD",  "numeric.p0", "numeric.p25",  "numeric.p50", "numeric.p75", "numeric.p100", "numeric.hist")
-kable(temp[,c(2,3,5,6)])
+colnames(temp) <- c("skim_type", "Variable", "Missing",  "complete_rate", "Mean",  "SD",  "Min", "numeric.p25",  "Median", "numeric.p75", "Max", "numeric.hist")
+kable(temp[,c(2,3,5,6,9, 7, 11)])
 ```
 
 ## Exploratory Data Analysis
@@ -81,20 +88,11 @@ kable(temp[,c(2,3,5,6)])
   + Most of the numeric fields are right skewed
   
   + FGA follows a binomial but with a heavier right tail
-  
-
-```{r}
-library(corrplot)
-# Comes out as all NAs for some reason
-no_na_numerics_tbl = na.omit(original_tbl[,12:30])
-correlation = cor(no_na_numerics_tbl, method = "pearson")
-par(mfrow=c(1,1))
-corrplot(correlation) # colorful number
-```
 
 ## Sampling models
 
   + Two variables of interest to predict are Field Goal Attempts and Field Goal Percent. Given below, we will attempt to model these with the beta and binomial respectively.
+  
 ```{r}
 par(mfrow=c(2,2))
 y1 = 2600
@@ -140,3 +138,12 @@ hist(rbeta(12300, 7, 7), xlim=c(0,1), ylim=c(0, y2), main="Beta(7,7) Approx",  x
 | **PF**                | Number of Personal Fouls done by the player in the single game. |
 | **PTS**               | Number of Points done by the player in the single game. |
 | **PLUS_MINUS**        | Number of Plus Minus done by the player in the single game. |
+
+```{r}
+library(corrplot)
+# Comes out as all NAs for some reason
+no_na_numerics_tbl = na.omit(original_tbl[,12:30])
+correlation = cor(no_na_numerics_tbl, method = "pearson")
+par(mfrow=c(1,1))
+corrplot(correlation) # colorful number
+```
