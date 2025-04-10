@@ -15,6 +15,7 @@ original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv")
 # original_tbl$COMMENT[original_tbl$COMMENT == ""] <- NA
 # original_tbl$COMMENT <- factor(original_tbl$COMMENT)
 
+
 original_tbl <- mutate(original_tbl,
                        START_POSITION = na_if(START_POSITION, ""),
                        START_POSITION = factor(original_tbl$START_POSITION),
@@ -23,7 +24,7 @@ original_tbl <- mutate(original_tbl,
                        MIN = na_if(MIN, ""),
                        )
 
-original_tbl = original_tbl[original_tbl$START_POSITION != "",]
+starting_dat = original_tbl[original_tbl$START_POSITION != "",]
 lebron_vs_steph_games = c(22300650, 22300973, 22301155)
 # Need: number of teams lebron faced off with
 # method: get list of game_IDs lebron played in 
@@ -33,7 +34,7 @@ lebron_vs_steph_games = c(22300650, 22300973, 22301155)
 What I want is a scatter plot. Y is FGA, X is opposing team name, and each dot represents one of the games played against them.
 
 ```{r}
-df = distinct(original_tbl[,c(2,3)])
+df = distinct(starting_dat[,c(2,3)])
 
 game_reigstry = df %>%
   group_by(GAME_ID) %>%
@@ -44,23 +45,23 @@ game_reigstry = df %>%
     values_from = TEAM_ID
   )
 
-original_tbl$Opposing_Team = NA
+starting_dat$Opposing_Team = NA
 
-for (i in 1:nrow(original_tbl)) {
+for (i in 1:nrow(starting_dat)) {
   for (j in 1:nrow(game_reigstry)) {
-    if (original_tbl$GAME_ID[i] == game_reigstry$GAME_ID[j]){
-      if (original_tbl$TEAM_ID[i] == game_reigstry$TEAM1_ID[j]) {
-        original_tbl$Opposing_Team[i] = game_reigstry$TEAM2_ID[j]
+    if (starting_dat$GAME_ID[i] == game_reigstry$GAME_ID[j]){
+      if (starting_dat$TEAM_ID[i] == game_reigstry$TEAM1_ID[j]) {
+        starting_dat$Opposing_Team[i] = game_reigstry$TEAM2_ID[j]
       }
-      if (original_tbl$TEAM_ID[i] == game_reigstry$TEAM2_ID[j]) {
-        original_tbl$Opposing_Team[i] = game_reigstry$TEAM1_ID[j]
+      if (starting_dat$TEAM_ID[i] == game_reigstry$TEAM2_ID[j]) {
+        starting_dat$Opposing_Team[i] = game_reigstry$TEAM1_ID[j]
       }
     }
 
   }
 }
 
-lebron_dat = original_tbl[original_tbl$PLAYER_ID %in% 2544, ] # lebron 2544 and steph curry 201939
+lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ] # lebron 2544 and steph curry 201939
 ```
 
 
@@ -77,6 +78,14 @@ hist(lebron_dat$FGA, main="Histogram of Lebron's FGA")
 
 ```{r}
 library(ggplot2)
+library(forcats)
+library(forcats)
+
+lebron_dat <- lebron_dat %>%
+  mutate(Opposing_Team = fct_reorder(as.factor(Opposing_Team), FGA, .fun = mean))
+mean_fga = mean(lebron_dat$FGA)
+sd_fga = sd(lebron_dat$FGA)
+
 df_lines <- lebron_dat %>%
   group_by(Opposing_Team) %>%
   arrange(FGA) %>%
@@ -87,10 +96,73 @@ ggplot(df_lines, aes(x = FGA, y = Opposing_Team, group = Opposing_Team)) +
   geom_line(aes(x = Opposing_Team, y = FGA, group = Opposing_Team), orientation = "FGA") +
   labs(
     title = "Lebron FGA group variation plot",
-    subtitle = "Data is only for Lebron",
-    x = "Opposing Team",
+    subtitle = "Data is only for Lebron, includes mean in red and 1 sd in blue",
+    x = "Opposing Team ID",
     y = "FGA"
-  )
+  ) +
+  geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
+  geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
+  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)
 ```
+
+```{r}
+library(ggplot2)
+library(forcats)
+library(forcats)
+
+lebron_dat <- lebron_dat %>%
+  mutate(Opposing_Team = fct_reorder(as.factor(Opposing_Team), FG_PCT, .fun = mean))
+mean_fga = mean(lebron_dat$FG_PCT)
+sd_fga = sd(lebron_dat$FG_PCT)
+
+df_lines <- lebron_dat %>%
+  group_by(Opposing_Team) %>%
+  arrange(FG_PCT) %>%
+  mutate(index = row_number())  # create a pseudo-x to keep line ordering
+
+ggplot(df_lines, aes(x = FG_PCT, y = Opposing_Team, group = Opposing_Team)) +
+  geom_point(aes(x = Opposing_Team, y = FG_PCT)) +
+  geom_line(aes(x = Opposing_Team, y = FG_PCT, group = Opposing_Team), orientation = "FG_PCT") +
+  labs(
+    title = "Lebron FG_PCT group variation plot",
+    subtitle = "Data is only for Lebron, includes mean in red and 1 sd in blue",
+    x = "Opposing Team ID",
+    y = "FG_PCT"
+  ) +
+  geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
+  geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
+  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)
+```
+
+```{r}
+library(ggplot2)
+library(forcats)
+library(forcats)
+
+lebron_dat <- lebron_dat %>%
+  mutate(Opposing_Team = fct_reorder(as.factor(Opposing_Team), FGM, .fun = mean))
+mean_fga = mean(lebron_dat$FGM)
+sd_fga = sd(lebron_dat$FGM)
+
+df_lines <- lebron_dat %>%
+  group_by(Opposing_Team) %>%
+  arrange(FGM) %>%
+  mutate(index = row_number())  # create a pseudo-x to keep line ordering
+
+ggplot(df_lines, aes(x = FGM, y = Opposing_Team, group = Opposing_Team)) +
+  geom_point(aes(x = Opposing_Team, y = FGM)) +
+  geom_line(aes(x = Opposing_Team, y = FGM, group = Opposing_Team), orientation = "FGM") +
+  labs(
+    title = "Lebron FGM group variation plot",
+    subtitle = "Data is only for Lebron, includes mean in red and 1 sd in blue",
+    x = "Opposing Team ID",
+    y = "FGM"
+  ) +
+  geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
+  geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
+  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)
+```
+```
+
 
 
