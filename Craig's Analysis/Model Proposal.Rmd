@@ -1,0 +1,96 @@
+---
+title: "Model Proposal"
+author: "Ben Moolman, Craig Orman, Ethan Pross"
+output: pdf_document
+---
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+library(dplyr)
+library(tidyverse)
+library(knitr)
+library(skimr)
+library(tidyr)
+
+original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv")
+# original_tbl$COMMENT[original_tbl$COMMENT == ""] <- NA
+# original_tbl$COMMENT <- factor(original_tbl$COMMENT)
+
+original_tbl <- mutate(original_tbl,
+                       START_POSITION = na_if(START_POSITION, ""),
+                       START_POSITION = factor(original_tbl$START_POSITION),
+                       COMMENT = na_if(COMMENT, ""),
+                       COMMENT = factor(original_tbl$COMMENT),
+                       MIN = na_if(MIN, ""),
+                       )
+
+original_tbl = original_tbl[original_tbl$START_POSITION != "",]
+lebron_vs_steph_games = c(22300650, 22300973, 22301155)
+# Need: number of teams lebron faced off with
+# method: get list of game_IDs lebron played in 
+
+```
+
+What I want is a scatter plot. Y is FGA, X is opposing team name, and each dot represents one of the games played against them.
+
+```{r}
+df = distinct(original_tbl[,c(2,3)])
+
+game_reigstry = df %>%
+  group_by(GAME_ID) %>%
+  arrange(TEAM_ID, .by_group = TRUE) %>%  # Optional: keeps order consistent
+  mutate(team_slot = paste0("TEAM", row_number(), "_ID")) %>%
+  pivot_wider(
+    names_from = team_slot,
+    values_from = TEAM_ID
+  )
+
+original_tbl$Opposing_Team = NA
+
+for (i in 1:nrow(original_tbl)) {
+  for (j in 1:nrow(game_reigstry)) {
+    if (original_tbl$GAME_ID[i] == game_reigstry$GAME_ID[j]){
+      if (original_tbl$TEAM_ID[i] == game_reigstry$TEAM1_ID[j]) {
+        original_tbl$Opposing_Team[i] = game_reigstry$TEAM2_ID[j]
+      }
+      if (original_tbl$TEAM_ID[i] == game_reigstry$TEAM2_ID[j]) {
+        original_tbl$Opposing_Team[i] = game_reigstry$TEAM1_ID[j]
+      }
+    }
+
+  }
+}
+
+lebron_dat = original_tbl[original_tbl$PLAYER_ID %in% 2544, ] # lebron 2544 and steph curry 201939
+```
+
+
+Examining FGA and FGM 
+
+```{r}
+
+team_ids = lebron_dat[lebron_dat$PLAYER_ID == 2544,c(2,3)]
+
+hist(lebron_dat$FGA, main="Histogram of Lebron's FGA")
+
+# hist(rpois(1000, 10))
+```
+
+```{r}
+library(ggplot2)
+df_lines <- lebron_dat %>%
+  group_by(Opposing_Team) %>%
+  arrange(FGA) %>%
+  mutate(index = row_number())  # create a pseudo-x to keep line ordering
+
+ggplot(df_lines, aes(x = FGA, y = Opposing_Team, group = Opposing_Team)) +
+  geom_point(aes(x = Opposing_Team, y = FGA)) +
+  geom_line(aes(x = Opposing_Team, y = FGA, group = Opposing_Team), orientation = "FGA") +
+  labs(
+    title = "Lebron FGA group variation plot",
+    subtitle = "Data is only for Lebron",
+    x = "Opposing Team",
+    y = "FGA"
+  )
+```
+
+
