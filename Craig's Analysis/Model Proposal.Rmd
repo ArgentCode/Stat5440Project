@@ -4,13 +4,18 @@ author: "Ben Moolman, Craig Orman, Ethan Pross"
 output: pdf_document
 ---
 
-```{r, warning = FALSE, message = FALSE, echo = FALSE}
+```{r, echo=FALSE}
 library(dplyr)
 library(tidyverse)
 library(knitr)
 library(skimr)
 library(tidyr)
+library(ggplot2)
+library(forcats)
+```
 
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
 original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv")
 # original_tbl$COMMENT[original_tbl$COMMENT == ""] <- NA
 # original_tbl$COMMENT <- factor(original_tbl$COMMENT)
@@ -22,28 +27,46 @@ original_tbl <- mutate(original_tbl,
                        COMMENT = na_if(COMMENT, ""),
                        COMMENT = factor(original_tbl$COMMENT),
                        MIN = na_if(MIN, ""),
+                       MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:"),
+                       
                        )
+
 
 starting_dat = original_tbl[original_tbl$START_POSITION != "",]
 lebron_vs_steph_games = c(22300650, 22300973, 22301155)
-# Need: number of teams lebron faced off with
-# method: get list of game_IDs lebron played in 
 
 ```
+
+```{r}
+# Calculate total points per team per game
+# here, datatest2 is the entire data frame that is not filtered for starters
+team_points <- starting_dat %>%
+  group_by(GAME_ID, TEAM_ID) %>%
+  summarize(TeamPoints = sum(PTS), .groups = "drop")
+
+# tidying
+team_points_opponent <- team_points %>%
+  rename(OPP_TEAM_ID = TEAM_ID, OpponentPoints = TeamPoints)
+
+# join and filter
+team_vs_opponent <- team_points %>%
+  inner_join(team_points_opponent, by = "GAME_ID") %>%
+  filter(TEAM_ID != OPP_TEAM_ID)
+
+# calculate average opponent points per team (our DRTG)
+team_drtg <- team_vs_opponent %>%
+  group_by(TEAM_ID) %>%
+  summarize(DRTG_proxy = mean(OpponentPoints), n_games = n(), .groups = "drop")
+
+range(team_drtg$DRTG_proxy)
+mean(team_drtg$DRTG_proxy)
+```
+
 
 What I want is a scatter plot. Y is FGA, X is opposing team name, and each dot represents one of the games played against them.
 
 ```{r}
 df = distinct(starting_dat[,c(2,3, 4)])
-
-# game_reigstry = df %>%
-#   group_by(GAME_ID) %>%
-#   arrange(TEAM_ID, .by_group = TRUE) %>%  # Optional: keeps order consistent
-#   mutate(team_slot = paste0("TEAM", row_number(), "_ID")) %>%
-#   pivot_wider(
-#     names_from = team_slot,
-#     values_from = TEAM_ID
-#   )
 
 game_registry <- df %>%
   group_by(GAME_ID) %>%
@@ -61,29 +84,47 @@ colnames(game_registry) <- c("Game_ID", "Team_1_ID", "Team_2_ID", "Team_1_Abbrev
 starting_dat$Opposing_Team_Name_ID = NA
 starting_dat$Opposing_Team_Name = NA
 
-for (i in 1:nrow(starting_dat)) {
-  for (j in 1:nrow(game_registry)) {
-    
-    if (starting_dat$GAME_ID[i] == game_registry$Game_ID[j]){
-      
-      if (starting_dat$TEAM_ID[i] == game_registry$Team_1_ID[j]) {
-        starting_dat$Opposing_Team_Name_ID[i] = game_registry$Team_2_ID[j]
-        starting_dat$Opposing_Team_Name[i] = game_registry$Team_2_Abbrev[j]
-      }
-      if (starting_dat$TEAM_ID[i] == game_registry$Team_2_ID[j]) {
-        starting_dat$Opposing_Team_Name_ID[i] = game_registry$Team_1_ID[j]
-        starting_dat$Opposing_Team_Name[i] = game_registry$Team_1_Abbrev[j]
-      }
-      
-    }
+starting_dat <- starting_dat %>%
+  left_join(game_registry, by = c("GAME_ID" = "Game_ID")) %>%
+  mutate(
+    Opposing_Team_Name_ID = if_else(
+      TEAM_ID == Team_1_ID, Team_2_ID,
+      if_else(TEAM_ID == Team_2_ID, Team_1_ID, NA_integer_)
+    ),
+    Opposing_Team_Name = if_else(
+      TEAM_ID == Team_1_ID, Team_2_Abbrev,
+      if_else(TEAM_ID == Team_2_ID, Team_1_Abbrev, NA_character_)
+    )
+  ) %>%
+  select(-Team_1_ID, -Team_2_ID, -Team_1_Abbrev, -Team_2_Abbrev)
 
-  }
-}
+
 
 lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ] # lebron 2544 and steph curry 201939 anthony davis (lebron teammate) 203076
 anthony_dat = starting_dat[starting_dat$PLAYER_ID %in% 203076, ]
 ```
 
+```{r, echo=FALSE, eval=FALSE}
+# For loop of doom, but it works!
+# for (i in 1:nrow(starting_dat)) {
+#   for (j in 1:nrow(game_registry)) {
+#     
+#     if (starting_dat$GAME_ID[i] == game_registry$Game_ID[j]){
+#       
+#       if (starting_dat$TEAM_ID[i] == game_registry$Team_1_ID[j]) {
+#         starting_dat$Opposing_Team_Name_ID[i] = game_registry$Team_2_ID[j]
+#         starting_dat$Opposing_Team_Name[i] = game_registry$Team_2_Abbrev[j]
+#       }
+#       if (starting_dat$TEAM_ID[i] == game_registry$Team_2_ID[j]) {
+#         starting_dat$Opposing_Team_Name_ID[i] = game_registry$Team_1_ID[j]
+#         starting_dat$Opposing_Team_Name[i] = game_registry$Team_1_Abbrev[j]
+#       }
+#       
+#     }
+# 
+#   }
+# }
+```
 
 Examining FGA and FGM 
 
@@ -97,9 +138,6 @@ hist(lebron_dat$FGA, main="Histogram of Lebron's FGA")
 ```
 
 ```{r}
-library(ggplot2)
-library(forcats)
-library(forcats)
 
 lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ] # lebron 2544 and steph curry 201939
 lebron_dat <- lebron_dat %>%
@@ -123,7 +161,8 @@ ggplot(df_lines, aes(x = FGA, y = Opposing_Team_Name, group = Opposing_Team_Name
   ) +
   geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
   geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
-  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)
+  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 # And now for Steph
 steph_dat = starting_dat[starting_dat$PLAYER_ID == 201939, ] # lebron 2544 and steph curry 201939
@@ -148,7 +187,8 @@ ggplot(df_lines, aes(x = FGA, y = Opposing_Team_Name, group = Opposing_Team_Name
   ) +
   geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
   geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
-  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)
+  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 ```
 
 ```{r}
@@ -217,6 +257,47 @@ steph_dat = starting_dat[starting_dat$PLAYER_ID == 201939, ] # lebron 2544 and s
 hist(steph_dat$FGA)
 ```
 
+```{r}
+luca_dat = starting_dat[starting_dat$PLAYER_ID == 1629029,] # Luca Donic 1629029
+bam_dat = starting_dat[starting_dat$PLAYER_ID == 1628389,] # # Bam Adebayo 1628389
+lebron_dat = starting_dat[starting_dat$PLAYER_ID == 2544,] # Lebron James 2544
+steph_dat = starting_dat[starting_dat$PLAYER_ID == 201939, ] # steph curry 201939
+# hist(lebron_dat$FGA)
+# hist(rnbinom(100, max(lebron_dat$FGA), g))
+# hist(steph_dat$FGA)
+# hist(rnbinom(100, max(steph_dat$FGA), g))
 
 
+a = 5
+b = 5
+par(mfrow=c(2,2))
+hist(lebron_dat$FG_PCT)
+hist(rbeta(100, a, b))
+hist(steph_dat$FG_PCT)
+hist(rbeta(100, a, b))
+```
+
+```{r}
+player_FGA_stats <- starting_dat %>%
+  group_by(PLAYER_NAME) %>%
+  summarise(
+    mean_FGA = round(mean(FGA, na.rm = TRUE), 2),
+    var_FGA = round(var(FGA, na.rm = TRUE), 2),
+    .groups = "drop"
+  ) %>% drop_na() # dropping players who only started once!
+
+sum(player_FGA_stats$var_FGA - player_FGA_stats$mean_FGA < -2, na.rm = TRUE)/nrow(player_FGA_stats)
+# 53% have atleast 2 more variance than mean
+# 14% have atleast 2 more mean than variance
+# 33$ have variance within 2 of mean 
+```
+
+```{r}
+starting_dat$MIN
+
+starting_dat %>%
+  mutate(
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
+  )
+```
 
