@@ -66,9 +66,7 @@ mean(team_drtg$DRTG_proxy)
 What I want is a scatter plot. Y is FGA, X is opposing team name, and each dot represents one of the games played against them.
 
 ```{r}
-df = distinct(starting_dat[,c(2,3, 4)])
-
-game_registry <- df %>%
+game_registry <- distinct(starting_dat[,c(2,3, 4)]) %>%
   group_by(GAME_ID) %>%
   arrange(TEAM_ID, .by_group = TRUE) %>%
   mutate(slot = paste0("TEAM", row_number())) %>%
