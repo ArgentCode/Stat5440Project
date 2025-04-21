@@ -4,7 +4,7 @@ author: "Ben Moolman, Craig Orman, Ethan Pross"
 output: pdf_document
 ---
 
-```{r, echo=FALSE}
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
 library(dplyr)
 library(tidyverse)
 library(knitr)
@@ -12,6 +12,7 @@ library(ggplot2)
 library(coda)
 ```
 
+## Beginning Data upload
 ```{r, warning = FALSE, message = FALSE, echo = FALSE}
 original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv")
 # original_tbl$COMMENT[original_tbl$COMMENT == ""] <- NA
@@ -60,7 +61,7 @@ range(team_drtg$DRTG_proxy)
 mean(team_drtg$DRTG_proxy)
 ```
 
-## prepping the model
+## Prepping the model
 
 Situation: 
 $$
@@ -73,64 +74,58 @@ $$
 
 ```{r}
 lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
-model_1_dat = lebron_dat[lebron_dat$GAME_ID %in% lebron_vs_steph_games,]
+model_1_dat = lebron_dat[lebron_dat$GAME_ID %in% lebron_vs_steph_games,] # This basically turned out to be too small of a dataset to do much with...
 Y = lebron_dat$FGM
 N = nrow(lebron_dat)
 true_p = mean(lebron_dat$FG_PCT)
-n_mean = round(mean(lebron_dat$FGA)) #NAs casue mean is not an integer
 n_median = median(lebron_dat$FGA)
-n_max = max(lebron_dat$FGA)
 ```
 
-# sample values for p!
+## Sample values for p!
 
 ```{r}
-n = n_mean
-prop_sd = 0.4
-
+#This is the uhhhh posterior I think
 log_q = function(theta, y=3, n=10) {
   if (theta<0 | theta>1) return(-Inf)
   (y-0.5)*log(theta)+(n-y-0.5)*log(1-theta)
 }
 
-
-MH_beta_binom = function(current = 0.5, prop_sd) {
+# This runs the Metropolis hastings algorithm
+MH_beta_binom = function(current = 0.5, prop_sd, n = n) {
   current = 0.5 # Initial value
   samps = rep(NA,N)
   for (i in 1:N) {
-    proposed = rnorm(1, current, prop_sd) # tuning parameter is 0.4
+    proposed = rnorm(1, current, prop_sd) # tuning parameter goes here
     logr = log_q(proposed, y=Y[i], n=n)-log_q(current, y=Y[i], n=n)
-    if (log(runif(1)) < logr) current = proposed
+    if (log(runif(1)) < logr) current = proposed #comparitor
     samps[i] = current
   }
   paste("Acceptance Rate: ", length(unique(samps))/n)
   return(samps)
 }
-```
 
-Now we use the power of functions 
-
-```{r}
-vals = seq(from=0.01, to = 20, by = 0.01)
-effect_sizes = data.frame(sd = vals, effect_size = NA)
-for (i in 1:length(vals)) {
-  samps = MH_beta_binom(prop_sd = vals[i])
-  effect_sizes[i,2] = effectiveSize(samps)
+# This is such a grid search of the MH using a variety of Proposed SDs
+# and choosing the best one to maximize the effective sample size
+MH_beta_grid_serach = function(current = 0.5, n) {
+  vals = seq(from=0.01, to = 20, by = 0.01)
+  effect_sizes = data.frame(sd = vals, effect_size = NA)
+  for (i in 1:length(vals)) {
+    samps = MH_beta_binom(prop_sd = vals[i], n=n)
+    effect_sizes[i,2] = effectiveSize(samps)
+  }
+  best_sd = effect_sizes$sd[effect_sizes$effect_size == max(effect_sizes$effect_size)] #select best sd option
+  return(MH_beta_binom(prop_sd = best_sd, n=n))
 }
-best_sd = effect_sizes$sd[effect_sizes$effect_size == max(effect_sizes$effect_size)]
-paste("max effective sample size: ", round(max(effect_sizes$effect_size),4), "at sd: ", best_sd)
-# effectiveSize(samps)
-# hist(samps)
-# abline(v = true_p, col = "red", lwd = 2)
-# plot(as.mcmc(samps))
 ```
 
-# Sample from the predictive posterior
+## Model 1 using N as fixed
 
 So basically, I don't think I did the predictive posterior correctly. And also, we have low ESS and the y's don't fit the best! For shame team, for shame.
 
 ```{r}
-samps = MH_beta_binom(prop_sd = best_sd)
+
+n_mean = round(mean(lebron_dat$FGA)) #NAs casue mean is not an integer
+samps = MH_beta_grid_serach(n=n_mean)
 yhat <- rbinom(1000, n_mean, mean(samps))
 hist(yhat)
 abline(v = mean(Y), col = "red", lwd = 2)
@@ -138,18 +133,146 @@ abline(v = mean(Y), col = "red", lwd = 2)
 
 
 ```{r}
-samps = MH_beta_binom(prop_sd = best_sd)
+n_median = median(lebron_dat$FGA)
+samps = MH_beta_grid_serach(n=n_median)
 yhat <- rbinom(1000, n_median, mean(samps))
 hist(yhat)
 abline(v = mean(Y), col = "red", lwd = 2)
 ```
 
-
 ```{r}
-samps = MH_beta_binom(prop_sd = best_sd)
+n_max = max(lebron_dat$FGA)
+samps = MH_beta_grid_serach(n=n_max)
 yhat <- rbinom(1000, n_max, mean(samps))
 hist(yhat)
 abline(v = mean(Y), col = "red", lwd = 2)
 ```
 
+## Model 2 using N as poisson
 
+$$
+\begin{aligned}
+  y| n, p \sim Binom(n,p)\\
+  n | \lambda \sim Poisson(\lambda)\\
+  \lambda \sim Gamma(\alpha_{\lambda}, \beta_{\lambda})\\
+  p \sim Beta(a,b)\\
+  a \sim Gamma(\alpha_{a}, \beta_{a})\\
+  b \sim Gamma(\alpha_{b}, \beta_{b})\\
+\end{aligned}
+$$
+
+To calculate all of these, we can use a gibbs sampler which requires the full conditionals
+
+$$
+\begin{aligned}
+  p &| y,n,a,b \sim Beta(y+a, n-y+b) &\text{Direct sample}\\
+  n &| y,p, \lambda \varpropto \binom{n}{y}p^y(1-p)^{n-y}\frac{e^{-\lambda}\lambda^n}{n!}&\text{MH  sampling needed}\\
+  \lambda &| n \sim Gamma(\alpha_\lambda + n, \beta_{\lambda}+1) &\text{Direct sample}\\
+  a,b &| p = \frac{1}{B(a,b)}p^{a-1}(1-p)^{b-1}&\text{MH  sampling needed}\\
+\end{aligned}
+$$
+
+```{r}
+run_sampler <- function(y, n_iter = 10000, 
+                        alpha_lambda = 1, beta_lambda = 1, 
+                        alpha_a = 1, beta_a = 1,
+                        alpha_b = 1, beta_b = 1,
+                        proposal_sd_a = 0.05, proposal_sd_b = 0.05) {
+  
+  len_y <- length(y)
+  samples <- list(p = numeric(n_iter), lambda = numeric(n_iter), 
+                  a = numeric(n_iter), b = numeric(n_iter),
+                  n = matrix(NA, nrow = n_iter, ncol = T))
+  
+  # Initialize
+  n <- y + 5
+  p <- 0.5
+  lambda <- 1
+  a <- 1
+  b <- 1
+  
+  for (iter in 1:n_iter) {
+    # --- 1. Sample p | y, n, a, b ---
+    p <- rbeta(1, sum(y) + a, sum(n - y) + b)
+    
+    # --- 2. Sample n_i | y_i, p, lambda (via MH) ---
+    for (i in 1:T) {
+      n_prop <- n[i] + sample(c(-1, 1), 1)
+      if (n_prop >= y[i]) {
+        log_accept <- (
+          dbinom(y[i], size = n_prop, prob = p, log = TRUE) +
+          dpois(n_prop, lambda = lambda, log = TRUE)
+        ) - (
+          dbinom(y[i], size = n[i], prob = p, log = TRUE) +
+          dpois(n[i], lambda = lambda, log = TRUE)
+        )
+        if (log(runif(1)) < log_accept) {
+          n[i] <- n_prop
+        }
+      }
+    }
+    
+    # --- 3. Sample lambda | n ---
+    lambda <- rgamma(1, alpha_lambda + sum(n), beta_lambda + len_y)
+    
+    # --- 4. MH update for a ---
+    a_prop <- max(1e-3, rnorm(1, a, proposal_sd_a)) # To guard against infinities
+    log_accept_a <- (
+      sum(dbeta(p, a_prop, b, log = TRUE)) + # log likelihood of p under proposed a
+      dgamma(a_prop, alpha_a, beta_a, log = TRUE) # log likelihood for proposed a
+    ) - (
+      sum(dbeta(p, a, b, log = TRUE)) + # log likelihoof of p under current accepted a
+      dgamma(a, alpha_a, beta_a, log = TRUE) # log likelihood for current a
+    )
+    if (is.finite(log_accept_a) && log(runif(1)) < log_accept_a) {
+      a <- a_prop
+    }
+    
+    # --- 5. MH update for b ---
+    b_prop <- abs(rnorm(1, b, proposal_sd_b))
+    log_accept_b <- (
+      sum(dbeta(p, a, b_prop, log = TRUE)) +
+      dgamma(b_prop, alpha_b, beta_b, log = TRUE)
+    ) - (
+      sum(dbeta(p, a, b, log = TRUE)) +
+      dgamma(b, alpha_b, beta_b, log = TRUE)
+    )
+    if (is.finite(log_accept_b) && log(runif(1)) < log_accept_b) {
+      b <- b_prop
+    }
+    
+    # --- Save ---
+    samples$p[iter] <- p
+    samples$lambda[iter] <- lambda
+    samples$a[iter] <- a
+    samples$b[iter] <- b
+    samples$n[iter, ] <- n
+  }
+  
+  return(samples)
+}
+```
+
+Running the code
+
+```{r}
+
+lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
+# Fake data: true p = 0.3, true lambda = 10
+set.seed(123)
+n_true <- lebron_dat$FGA
+y <- lebron_dat$FGM
+
+samples <- run_sampler(y, n_iter = 5000)
+
+plot(samples$p, type='l', main='Trace of p')
+hist(samples$p, main='Posterior of p', xlab='p')
+
+plot(samples$lambda, type='l', main='Trace of lambda')
+hist(samples$lambda, main='Posterior of lambda', xlab='lambda')
+
+```
+
+
+
+## Model 3 using N as negbinom
