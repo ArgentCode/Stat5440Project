@@ -1,0 +1,276 @@
+---
+title: "Model 2 Poisson"
+author: "Ben Moolman, Craig Orman, Ethan Pross"
+output: pdf_document
+---
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(coda)
+```
+
+## Beginning Data preparing
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv")
+
+
+original_tbl <- mutate(original_tbl,
+                       START_POSITION = na_if(START_POSITION, ""),
+                       START_POSITION = factor(original_tbl$START_POSITION),
+                       COMMENT = na_if(COMMENT, ""),
+                       COMMENT = factor(original_tbl$COMMENT),
+                       MIN = na_if(MIN, ""),
+                       MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:"),
+                       )
+
+starting_dat = original_tbl[original_tbl$START_POSITION != "",]
+lebron_vs_steph_games = c(22300650, 22300973, 22301155)
+
+# Code to add in opposing team
+
+game_registry <- distinct(starting_dat[,c(2,3, 4)]) %>%
+  group_by(GAME_ID) %>%
+  arrange(TEAM_ID, .by_group = TRUE) %>%
+  mutate(slot = paste0("TEAM", row_number())) %>%
+  pivot_wider(
+    names_from = slot,
+    values_from = c(TEAM_ID, TEAM_ABBREVIATION),
+    names_sep = "_"
+  )
+
+colnames(game_registry) <- c("Game_ID", "Team_1_ID", "Team_2_ID", "Team_1_Abbrev", "Team_2_Abbrev")
+
+
+starting_dat$Opposing_Team_Name_ID = NA
+starting_dat$Opposing_Team_Name = NA
+
+starting_dat <- starting_dat %>%
+  left_join(game_registry, by = c("GAME_ID" = "Game_ID")) %>%
+  mutate(
+    Opposing_Team_Name_ID = if_else(
+      TEAM_ID == Team_1_ID, Team_2_ID,
+      if_else(TEAM_ID == Team_2_ID, Team_1_ID, NA_integer_)
+    ),
+    Opposing_Team_Name = if_else(
+      TEAM_ID == Team_1_ID, Team_2_Abbrev,
+      if_else(TEAM_ID == Team_2_ID, Team_1_Abbrev, NA_character_)
+    )
+  ) %>%
+  select(-Team_1_ID, -Team_2_ID, -Team_1_Abbrev, -Team_2_Abbrev)
+
+```
+
+```{r, warning=FALSE}
+## Ben's DRTG code!
+# Calculate total points per team per game
+# here, datatest2 is the entire data frame that is not filtered for starters
+# filtering dataset to remove NAs which arise a player doesnt record any minutes in the game (sitting out)
+team_points <- na.omit(original_tbl) %>%
+  group_by(GAME_ID, TEAM_ID) %>%
+  summarize(TeamPoints = sum(PTS), .groups = "drop")
+
+# 
+team_points_opponent <- team_points %>%
+  rename(OPP_TEAM_ID = TEAM_ID, OpponentPoints = TeamPoints)
+
+# join and filter
+team_vs_opponent <- team_points %>%
+  inner_join(team_points_opponent, by = "GAME_ID") %>%
+  filter(TEAM_ID != OPP_TEAM_ID)
+
+# calculate average opponent points per team (our DRTG)
+team_drtg <- team_vs_opponent %>%
+  group_by(TEAM_ID) %>%
+  summarize(DRTG_proxy = mean(OpponentPoints), n_games = n(), .groups = "drop")
+
+range(team_drtg$DRTG_proxy)
+mean(team_drtg$DRTG_proxy)
+```
+DRTG data being joined to the starting data
+
+```{r, warning=FALSE}
+## NOW ADDING DRTG vars to original_tbl
+
+
+# Each team plays one opponent per game, so we pair them like this:
+game_team_pairs <- original_tbl %>%
+  select(GAME_ID, TEAM_ID) %>%
+  distinct()
+
+# Join to get each game twice: once for each team, with their opponent
+opponent_map <- game_team_pairs %>%
+  inner_join(game_team_pairs, by = "GAME_ID") %>%
+  filter(TEAM_ID.x != TEAM_ID.y) %>%
+  rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y)
+
+# Add opponent DRTG to the mapping
+opponent_map <- opponent_map %>%
+  left_join(team_drtg %>% rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy),
+            by = "OPP_TEAM_ID")
+
+# Join to add opponent DRTG column to the full data
+starting_dat <- starting_dat %>%
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID"))
+
+mean_drtg <- mean(team_drtg$DRTG_proxy)
+starting_dat <- starting_dat %>%
+  mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
+```
+
+## Implementing Poisson model via MH within Gibbs
+
+
+$$
+\begin{aligned}
+  y| n, p \sim Binom(n,p)\\
+  n | \lambda \sim Poisson(\lambda)\\
+  \lambda \sim Gamma(\alpha_{\lambda}, \beta_{\lambda})\\
+  p \sim Beta(a,b)\\
+  a \sim Gamma(\alpha_{a}, \beta_{a})\\
+  b \sim Gamma(\alpha_{b}, \beta_{b})\\
+\end{aligned}
+$$
+
+To calculate all of these, we can use a gibbs sampler which requires the full conditionals
+
+$$
+\begin{aligned}
+  p &| y,n,a,b \sim Beta(y+a, n-y+b) &\text{Direct sample}\\
+  n &| y,p, \lambda \varpropto \binom{n}{y}p^y(1-p)^{n-y}\frac{e^{-\lambda}\lambda^n}{n!}&\text{MH  sampling needed}\\
+  \lambda &| n \sim Gamma(\alpha_\lambda + n, \beta_{\lambda}+1) &\text{Direct sample}\\
+  a,b &| p = \frac{1}{B(a,b)}p^{a-1}(1-p)^{b-1}&\text{MH  sampling needed}\\
+\end{aligned}
+$$
+
+```{r}
+lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
+# Manual loop reset
+y = lebron_dat$FGM; n_iter = 10000;
+alpha_lambda = 1; beta_lambda = 1; 
+alpha_a = 1; beta_a = 1;
+alpha_b = 1; beta_b = 1;
+proposal_sd_a = 0.05; proposal_sd_b = 0.05;
+DRTGk= lebron_dat$DRTG_proxy; DRTGbar= mean(team_drtg$DRTG_proxy); gam=0.2
+```
+
+
+```{r}
+run_sampler <- function(y, n_iter = 10000, 
+                        alpha_lambda = 1, beta_lambda = 1, 
+                        alpha_a = 1, beta_a = 1,
+                        alpha_b = 1, beta_b = 1,
+                        proposal_sd_a = 0.05, proposal_sd_b = 0.05,
+                        DRTGk, DRTGbar, gam=0.2) {
+  
+  len_y <- length(y)
+  samples <- list(p = numeric(n_iter), lambda = numeric(n_iter), 
+                  a = numeric(n_iter), b = numeric(n_iter),
+                  n = matrix(NA, nrow = n_iter, ncol = T))
+  
+  # Initialize
+  n <- y + 5
+  p <- 0.5
+  lambda <- 1
+  a <- 1
+  b <- 1
+  
+  for (iter in 1:n_iter) {
+    # --- 1. Sample p | y, n, a, b ---
+    p <- rbeta(1, sum(y) + a, sum(n - y) + b)
+    
+    # --- 2. Sample n_i | y_i, p, lambda (via MH) ---
+    for (i in 1:T) {
+      # pik = min(1,pi * exp(gam * (DRTGk[i] - DRTGbar)))
+      n_prop <- n[i] + sample(c(-1, 1), 1)
+      if (n_prop >= y[i]) {
+        log_accept <- (
+          dbinom(y[i], size = n_prop, prob = p, log = TRUE) +
+          dpois(n_prop, lambda = lambda, log = TRUE)
+        ) - (
+          dbinom(y[i], size = n[i], prob = p, log = TRUE) +
+          dpois(n[i], lambda = lambda, log = TRUE)
+        )
+        if (is.finite(log_accept) && log(runif(1)) < log_accept) {
+          n[i] <- n_prop
+        }
+      }
+    }
+    # p = pi
+    
+    # --- 3. Sample lambda | n ---
+    lambda <- rgamma(1, alpha_lambda + sum(n), beta_lambda + len_y)
+    
+    # --- 4. MH update for a ---
+    a_prop <- max(1e-3, rnorm(1, a, proposal_sd_a)) # To guard against infinities
+    log_accept_a <- (
+      sum(dbeta(p, a_prop, b, log = TRUE)) + # log likelihood of p under proposed a
+      dgamma(a_prop, alpha_a, beta_a, log = TRUE) # log likelihood for proposed a
+    ) - (
+      sum(dbeta(p, a, b, log = TRUE)) + # log likelihoof of p under current accepted a
+      dgamma(a, alpha_a, beta_a, log = TRUE) # log likelihood for current a
+    )
+    if (is.finite(log_accept_a) && log(runif(1)) < log_accept_a) {
+      a <- a_prop
+    }
+    
+    # --- 5. MH update for b ---
+    b_prop <- abs(rnorm(1, b, proposal_sd_b))
+    log_accept_b <- (
+      sum(dbeta(p, a, b_prop, log = TRUE)) +
+      dgamma(b_prop, alpha_b, beta_b, log = TRUE)
+    ) - (
+      sum(dbeta(p, a, b, log = TRUE)) +
+      dgamma(b, alpha_b, beta_b, log = TRUE)
+    )
+    if (is.finite(log_accept_b) && log(runif(1)) < log_accept_b) {
+      b <- b_prop
+    }
+    
+    # --- Save ---
+    samples$p[iter] <- p
+    samples$lambda[iter] <- lambda
+    samples$a[iter] <- a
+    samples$b[iter] <- b
+    samples$n[iter, ] <- n
+  }
+  
+  return(samples)
+}
+```
+
+Running the code
+
+```{r}
+lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
+lebron_dat = merge(lebron_dat, team_drtg, by.x = "Opposing_Team_Name_ID", by.y="TEAM_ID")
+# Fake data: true p = 0.3, true lambda = 10
+set.seed(123)
+n_true <- lebron_dat$FGA
+y <- lebron_dat$FGM
+
+samples <- run_sampler(y, n_iter = 5000, DRTGk = lebron_dat$DRTG_proxy, DRTGbar = mean(team_drtg))
+
+plot(samples$p, type='l', main='Trace of p')
+abline(h=mean(lebron_dat$FG_PCT), lwd = 2, col='red')
+hist(samples$p, main='Posterior of p', xlab='p')
+
+plot(samples$lambda, type='l', main='Trace of lambda')
+hist(samples$lambda, main='Posterior of lambda', xlab='lambda')
+```
+
+And testing the final samples!
+
+```{r}
+n_mod_2 = samples$n[-1]
+p_mod_2 = samples$p[-1]
+y = rbinom(n_mod_2, p_mod_2)
+samps = MH_beta_grid_serach(n=n_max)
+yhat <- rbinom(1000, n_max, mean(samps))
+hist(yhat)
+abline(v = mean(Y), col = "red", lwd = 2)
+```
