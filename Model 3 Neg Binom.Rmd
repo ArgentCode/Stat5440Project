@@ -121,3 +121,188 @@ mean_drtg <- mean(team_drtg$DRTG_proxy)
 starting_dat <- starting_dat %>%
   mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
 ```
+
+## Model 3 implementation
+
+$$
+\begin{aligned}
+  y_{ikj} &\sim Binom(n_{ikj}, p_{ik})\\
+  p_{ik} &\sim \phi \times Beta(a,b)\\
+  n_{ijk} &\sim Neg Binom(r,\theta)\\
+  r &\sim Gamma(2,0.1)\\
+  \theta &\sim Beta(2,2)
+\end{aligned}
+$$
+
+Next we write out the full conditionals
+$$
+\begin{aligned}
+  y_{ikj}|... &\sim Bin(n_{ikj},p_{ik})\\
+  p_{ik}|... &\varpropto \phi p(y|p_{ik},n_{ikj})p(p_{ik}|a,b)\\
+  n_{ikj}|... &\varpropto p(y_{ikj}|p_{ik},n_{ikj})p(n_{ikj}|r,\theta)\\
+  a,b|... &\varpropto p(p_{ik}|a,b)p(a,b)\\
+  r,\theta|... &\varpropto p(n_{ikj}|r,\theta)p(r,\theta)
+  \end{aligned}
+$$
+
+So for this, we kinda have a full thingy set up?
+
+```{r}
+# Data and prior
+lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
+y = lebron_dat$FGM
+n = lebron_dat$FGM
+a = 1
+b = 1
+r = 20
+theta = 0.5
+eta = 2
+DRTG = lebron_dat$centered_OPP_DRTG
+psi=0.2
+
+# Priors for r's gamma
+Ga = 0.5
+Gb = 0.1
+
+# Priors for theta's beta
+Ta = 2 
+Tb = 2
+
+
+# Initial values
+n = 5
+p = 0.1
+
+# Save structures
+n_iter = 5000
+n_keep = matrix(NA, ncol=length(y), nrow=n_iter)
+p_keep = matrix(NA, ncol=length(y), nrow=n_iter)
+a_keep = numeric(n_iter)
+b_keep = numeric(n_iter)
+r_keep = numeric(n_iter)
+theta_keep = numeric(n_iter)
+
+
+# proposal variances
+prop_sd_a = 0.4
+prop_sd_b = 0.4
+prop_sd_eta = 0.4
+prop_sd_r = 0.4
+
+#pre-calculations
+n = length(y)
+sum_y = sum(y)
+
+# full log conditionals 
+log_fc_a = function(p, a, b) {
+  if (a<0) return(-Inf)
+  n = length(p)
+  (a-1)*sum(log(p))-n*lbeta(a,b)-5/2*(a+b)
+}
+log_fc_b = function(p, a, b) {
+  if (b<0) return(-Inf)
+  n = length(p)
+  (b-1)*sum(log(1-p))-n*lbeta(a,b)-5/2*(a+b)
+}
+
+log_fc_r = function(n, r, theta, Ga, Gb) {
+  N = length(theta)
+  return(sum(log(gamma(n+r))-log(r)) +
+           r^(Ga-1)*N*log(theta)+log(r)-Gb*r)
+}
+
+log_fc_eta = function(N, r, theta, prop_sd_eta, eta) {
+    sum(dnbinom(N, size=r, prob=theta, log=TRUE)) + 
+    dnorm(eta, mean=0, sd = prop_sd_eta, log=TRUE)
+}
+
+
+for (i in 1:n_iter){
+  # generate p based on a and b
+  p = pmin(1, exp(psi * DRTG) * rbeta(length(y), a, b))
+  
+  #sample a from full conditional
+  a_prop = rnorm(1, a, prop_sd_a)
+  logr = log_fc_a(p, a_prop, b) - log_fc_a(p, a, b)
+  if (is.finite(logr) && log(runif(1)) < logr) {
+      a <- a_prop
+  }
+
+  
+  # sample b from full conditional
+  b_prop = rnorm(1, b, prop_sd_a)
+  logr = log_fc_b(p, a, b_prop)-log_fc_b(p, a, b)
+  if (is.finite(logr) && log(runif(1)) < logr) {
+      b <- b_prop
+  }
+
+  # generate n based on r and theta
+  n = rnbinom(length(y), r, theta)
+  
+  
+  # sample theta from full conditional using a weird logit function
+  eta_prop = rnorm(1, b, prop_sd_r)
+  theta_prop = 1/(1+exp(-eta_prop))
+  logr = log_fc_eta(length(y), r, theta_prop, prop_sd_eta, eta_prop) - log_fc_eta(length(y), r, theta, prop_sd_eta, eta)
+    if (is.finite(logr) && log(runif(1)) < logr) {
+      eta <- eta_prop
+      theta <- theta_prop
+  }
+  # sample r from full conditional
+  r_prop = rnorm(1, b, prop_sd_r)
+  logr = log_fc_r(n, r_prop, theta, Ga, Gb)-log_fc_r(n, r, theta, Ga, Gb)
+  if (is.finite(logr) && log(runif(1)) < logr) {
+      r <- r_prop
+  }
+  
+  # Save our samples
+  n_keep[i,] = n
+  p_keep[i,] = p
+  a_keep[i] = a
+  b_keep[i] = b
+  r_keep[i] = r
+  theta_keep[i] = theta
+}
+```
+
+Some diagnostics to consider
+
+```{r}
+par(mfrow=c(4,2))
+plot(as.mcmc(a_keep), main="a")
+plot(as.mcmc(b_keep), main="b")
+plot(as.mcmc(r_keep), main="r")
+plot(as.mcmc(theta_keep), main="theta")
+```
+
+
+
+Find the columns pertaining to the steph v lebron games
+
+```{r}
+cols_of_interest = which(lebron_dat$GAME_ID %in%lebron_vs_steph_games, TRUE)
+n_pred = round(mean(n_keep[n_iter, cols_of_interest]))
+p_pred = mean(p_keep[n_iter, cols_of_interest]) # p's are pre scaled
+samps = rbinom(100, n_pred, p_pred)
+hist(samps,
+     main = "Predicted FGM against Steph",
+     xlab = "Field Goals Made",
+     col = "lightgreen", breaks = 15)
+abline(v = mean(lebron_dat$FGM[lebron_dat$GAME_ID %in% lebron_vs_steph_games]), col = "red", lwd = 2)
+
+
+hist(n_keep[800:n_iter, cols_of_interest],
+     main = "Predicted FGA against Steph",
+     xlab = "Field Goal Attempts",
+     col = "lightblue", breaks = 15)
+abline(v = mean(lebron_dat$FGA[lebron_dat$GAME_ID %in% lebron_vs_steph_games]), col = "red", lwd = 2)
+
+
+hist(p_keep[800:n_iter, cols_of_interest],
+     main = "Predicted FG_Pct against Steph",
+     xlab = "Field Goal Percent",
+     col = "orange", breaks = 15)
+abline(v = mean(lebron_dat$FG_PCT[lebron_dat$GAME_ID %in% lebron_vs_steph_games]), col = "red", lwd = 2)
+```
+
+

@@ -128,6 +128,191 @@ Situation:
 $$
 \begin{aligned}
   y_{ijk} &\sim Binom(n_{ijk}, p_{ik})\\
+  n_{ijk} &\sim \text{fixed n, trying mean, median, max}\\
+  p_{ik} &= p_i \times \text{exp}(\gamma (\text{DRTG}_k - \bar{\text{DRTG}}))\\
+  p_{i} &\sim Beta(5,5)
+\end{aligned}
+$$
+
+Set up
+
+```{r}
+# Filters for just LeBron games (71 games played by LeBron)
+lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
+
+# Gets centered_OPP_DRTG for each team LeBron played against (28 total teams)
+lebron_team_drtg <- lebron_dat %>%
+  group_by(OPP_TEAM_ID) %>%
+  summarize(centered_OPP_DRTG = first(centered_OPP_DRTG), .groups = "drop") %>%
+  arrange(OPP_TEAM_ID)
+
+# Get the field goal percentage for LeBron over the 71 games
+true_p = mean(lebron_dat$FG_PCT)
+# Get the mean number of field goals attempted per game
+n_median = median(lebron_dat$FGA)
+```
+
+Metropolis Hastings implementation to Obtain p_i
+
+```{r}
+log_q = function(theta, y, n) {
+  if (theta < 0 || theta > 1) return(-Inf)
+  sum(dbinom(y, size = n, prob = theta, log = TRUE)) + dbeta(theta, 5, 5, log = TRUE)
+}
+
+MH_beta_binom = function(current = 0.5, prop_sd = 0.05, n_vec, y_vec, n_iter = 1000) {
+  samps = rep(NA, n_iter)
+  for (i in 1:n_iter) {
+    proposed = rnorm(1, current, prop_sd)
+    logr = log_q(proposed, y = y_vec, n = n_vec) - log_q(current, y = y_vec, n = n_vec)
+    if (log(runif(1)) < logr) current = proposed
+    samps[i] = current
+  }
+  return(samps)
+}
+
+MH_beta_grid_search = function(current = 0.5, n_vec, y_vec, n_iter = 1000) {
+  vals <- seq(0.005, 1, by = 0.005)
+  effect_sizes <- data.frame(sd = vals, ess = NA)
+  
+  for (i in seq_along(vals)) {
+    samps <- MH_beta_binom(current = current, prop_sd = vals[i], 
+                           n_vec = n_vec, y_vec = y_vec, n_iter = n_iter)
+    effect_sizes$ess[i] <- effectiveSize(samps)
+  }
+  
+  best_sd <- effect_sizes$sd[which.max(effect_sizes$ess)]
+  final_samps <- MH_beta_binom(current = current, prop_sd = best_sd, 
+                               n_vec = n_vec, y_vec = y_vec, n_iter = n_iter)
+  
+  return(list(
+    samples = final_samps,
+    best_sd = best_sd,
+    ess_table = effect_sizes
+  ))
+}
+```
+
+Now run MH
+
+```{r}
+Y <- lebron_dat$FGM
+N_vec <- lebron_dat$FGA
+
+mh_result <- MH_beta_grid_search(current = 0.5, 
+                                 y_vec = Y, 
+                                 n_vec = N_vec, 
+                                 n_iter = 1000)
+
+p_samples <- mh_result$samples
+mh_result$best_sd  # tuning parameter chosen
+
+drtg_vec <- lebron_team_drtg$centered_OPP_DRTG  # length = 28
+gamma_val <- 0.01
+
+# Compute p_ik matrix: rows = posterior draws, cols = opponent teams
+p_ik_matrix <- outer(
+  p_samples,
+  drtg_vec,
+  FUN = function(p, drtg) p * exp(gamma_val * drtg)) |> pmin(1)  # clip to max 1
+
+# Posterior mean FG% per opponent
+p_ik_mean <- colMeans(p_ik_matrix)
+
+# Credible intervals
+p_ik_CI <- apply(p_ik_matrix, 2, quantile, probs = c(0.025, 0.975))
+
+# Combine into a table
+p_ik_summary <- data.frame(
+  OPP_TEAM_ID = lebron_team_drtg$OPP_TEAM_ID,
+  p_ik_mean = p_ik_mean,
+  p_ik_lower = p_ik_CI[1,],
+  p_ik_upper = p_ik_CI[2,]
+)
+
+ggplot(p_ik_summary, aes(x = reorder(as.factor(OPP_TEAM_ID), -p_ik_mean), y = p_ik_mean)) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_errorbar(aes(ymin = p_ik_lower, ymax = p_ik_upper), width = 0.2, color = "steelblue") +
+  labs(
+    title = "LeBron's Estimated FG% by Opponent Team",
+    x = "Opponent Team ID",
+    y = "Posterior Mean FG%"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+Now we will look at LeBron against Stephen Curry predictions (against Golden State Warriors, TEAM_ID = 1610612744)
+
+```{r}
+# Get centered DRTG for GSW (Golden State Warriors)
+drtg_gsw <- lebron_team_drtg$centered_OPP_DRTG[lebron_team_drtg$OPP_TEAM_ID == 1610612744]
+gamma_val <- 0.01  # fixed tuning value
+p_ik_gsw <- p_samples * exp(gamma_val * drtg_gsw)
+p_ik_gsw <- pmin(p_ik_gsw, 1)  # ensure FG% stays within [0,1]
+
+# FGAs for LeBron
+n_mean <- round(mean(lebron_dat$FGA, na.rm = TRUE))
+n_median <- round(median(lebron_dat$FGA, na.rm = TRUE))
+n_max <- max(lebron_dat$FGA, na.rm = TRUE)
+
+# Simulations using different n_i values
+set.seed(5440)
+fgm_sim_mean <- rbinom(length(p_ik_gsw), size = n_mean, prob = p_ik_gsw)
+fgm_sim_median <- rbinom(length(p_ik_gsw), size = n_median, prob = p_ik_gsw)
+fgm_sim_max <- rbinom(length(p_ik_gsw), size = n_max, prob = p_ik_gsw)
+
+# Plot 1: Mean FGA
+hist(fgm_sim_mean,
+     main = paste("Simulated FGM vs GSW (n_i = mean =", n_mean, ")"),
+     xlab = "Field Goals Made",
+     col = "skyblue", breaks = 15)
+abline(v = mean(fgm_sim_mean), col = "red", lwd = 2)
+
+# Plot 2: Median FGA
+hist(fgm_sim_median,
+     main = paste("Simulated FGM vs GSW (n_i = median =", n_median, ")"),
+     xlab = "Field Goals Made",
+     col = "orange", breaks = 15)
+abline(v = mean(fgm_sim_median), col = "red", lwd = 2)
+
+# Plot 3: Max FGA
+hist(fgm_sim_max,
+     main = paste("Simulated FGM vs GSW (n_i = max =", n_max, ")"),
+     xlab = "Field Goals Made",
+     col = "lightgreen", breaks = 15)
+abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
+```
+
+Interpretation and Generalization
+
+This simulation estimates the \textbf{posterior predictive distribution} of field goals made (FGM) for a given player \( i \) (in this case, LeBron James) when matched against a specific opponent team \( k \) (here, the Golden State Warriors). The distribution reflects:
+
+\begin{itemize}
+  \item Uncertainty in the player's overall shooting ability \( p_i \),
+  \item Game-to-game variability in performance, and
+  \item Adjustments for the defensive strength of the opposing team via the centered DRTG metric.
+\end{itemize}
+
+This framework can be generalized to \textit{any} player \( i \) and \textit{any} opponent \( k \) in the dataset. By sampling from the posterior of \( p_i \), scaling it by the opponent's centered DRTG using \( \gamma \), and drawing from a binomial distribution with a fixed \( n_i \), we obtain predictive in-game outcomes tailored to individual matchups.
+
+
+
+
+
+
+
+
+
+## Model 1 implementation
+
+Situation: 
+$$
+\begin{aligned}
+  y_{ijk} &\sim Binom(n_{ijk}, p_{ik})\\
   n_{ijk} &\sim \text{by model}\\
   p_{ik} &= p_i \times \text{exp}(\gamma (\text{DRTG}_k - \bar{\text{DRTG}}))\\
   p_{i} &\sim Beta(5,5)
