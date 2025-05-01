@@ -107,7 +107,7 @@ mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000,
   
   for (i in 1:n_iter) {
     # sample p
-    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(true_n-y)) # Ask Ethan again about this
+    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(n-y))
     p<- p_unscaled*def_factor
     
     # sample lambda
