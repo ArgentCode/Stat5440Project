@@ -80,7 +80,8 @@ log_n_con = function(p, lambda, n, y) {
     log( ((1-p)*lambda)^sum(n) ) - sum(log((factorial(n-y))))
   }
 }
-mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000, init_lambda = c(), init_n = c(), gamma=0.01) {
+mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000,
+                        init_lambda = c(), init_n = c(), gamma=0.01) {
   # Gather true data
   player_dat = data[data$PLAYER_ID == player_id, ]
   player_dat = player_dat[player_dat$OPP_TEAM_ID == opp_team_id, ]
@@ -106,7 +107,7 @@ mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000, init_lambda =
   
   for (i in 1:n_iter) {
     # sample p
-    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(n-y))
+    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(true_n-y)) # Ask Ethan again about this
     p<- p_unscaled*def_factor
     
     # sample lambda
