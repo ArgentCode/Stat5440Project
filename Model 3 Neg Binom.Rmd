@@ -154,11 +154,11 @@ So for this, we kinda have a full thingy set up?
 
 ```{r}
 # Data and prior
-# 1610612746 is steph currys team maybe
 # 2544 is Lebron's player id 
+# 1610612744 is GSw, Steph Curry's team
 
 log_n_func = function(n, r, y, theta, p){
-  sum(log(factorial(n+r-1)))- sum(log(factorial(n-y))) + sum(n * log((1-theta)*(1-p)))
+  sum(log(factorial(n+r-1)))- sum(log(factorial(n-y))) + sum(n)*log(1-theta) +sum(n) * log(1-p)
 }
 
 log_r_func = function(r, n, y, theta, p) {
@@ -168,14 +168,13 @@ log_r_func = function(r, n, y, theta, p) {
 #### RESETING COMMANDS START
 
 data = starting_dat
-inits=list(p = 0.5,
-           n = 20,
+inits=list(n = 24,
            r = 20,
            theta = 0.3)
-prop_sd = list(n = 4, r = 3, theta = 5)
+prop_sd = list(n = 0.1, r = 0.4)
 psi = 0.01
-player_id = 2544
-opp_team_id = 1610612746
+player_id = 2544 # LeBron
+opp_team_id = 1610612744 #GSW
 n_iter = 100
 
 ### RESETTING COMMANDS END
@@ -207,7 +206,104 @@ gibby = function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000,
   # Gibbs sampler main
   for (i in 1:n_iter) {
     # Generate p
-    pi = rbeta(1,5+sum(true_y), 5+sum(true_n - true_y))
+    pi = rbeta(1,5+sum(true_y), 5+sum(n - true_y))
+    p = min(1, pi * exp(psi * DRTG_var))
+    
+    # Generate n
+    prop_n = rnorm(1, mean=n, sd = prop_n_sd) # round to ensure its integer, using r as thats what Dr. Niemi did 
+    logn = log_n_func(n=prop_n, r, true_y, theta, p) - log_n_func(n=n, r, true_y, theta, p)
+    if (is.finite(logn) && log(runif(1)) < logn) {
+      n <- prop_n
+    }
+    
+    # generate r 
+    prop_r = rnorm(1, mean=r, sd = prop_r_sd) # round to ensure its integer, using r as thats what Dr. Niemi did 
+    logr = log_r_func(prop_r, n, true_y, theta, p) - log_r_func(r, n, true_y, theta, p)
+    if (is.finite(logr) && log(runif(1)) < logr) {
+      r <- prop_r
+    }
+    # generate theta
+    theta = rbeta(1, (sum(n)+ (1/2)), (r - 1))
+    
+    # Save values 
+    
+    n_keep[i] =n
+    p_keep[i] = p 
+    r_keep[i] = r
+    theta_keep[i] = theta
+  }
+  output = list(n = n_keep[n_burnin:n_iter], p = p_keep[n_burnin:n_iter],
+                r = r_keep[n_burnin:n_iter], theta = theta_keep[n_burnin:n_iter])
+  return(output)
+}
+
+```
+
+```{r}
+
+# 2544 is Lebron's player id 
+# 1610612744 is GSw, Steph Curry's team
+
+true_dat = starting_dat[starting_dat$PLAYER_ID == 2544,]
+true_dat = true_dat[true_dat$Opposing_Team_Name_ID == 1610612744,]
+
+#function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000)
+inits=list(n = true_dat$FGA,
+           r = 20,
+           theta = 0.5)
+prop_sd = list(n = 100, r = 2)
+n_iter = 26000
+n_burnin = 1000
+output = suppressWarnings(gibby(starting_dat, inits, prop_sd = prop_sd,
+                                psi=0.01, player_id = 2544, opp_team_id = 1610612744,
+                                n_iter=n_iter, n_burnin = n_burnin))
+# Diagnostics
+plot(y=output$n, x = 1:length(output$n), type = 'l', main="Trace Plot of n")
+# plot(as.mcmc(output$n), main="n")
+abline(h = mean(output$n), col='red', lwd=2)
+abline(h = mean(true_dat$FGA), col='blue', lwd=2)
+
+plot(y=output$p, x = 1:length(output$n), type = 'l', main="Trace Plot of p")
+abline(h = mean(output$p), col='red', lwd=2)
+abline(h = mean(true_dat$FG_PCT), col='blue', lwd=2)
+
+plot(y=output$r, x = 1:length(output$n), type = 'l', main="Trace Plot of r")
+abline(h = mean(output$r), col='red', lwd=2)
+plot(y=output$theta, x = 1:length(output$n), type = 'l', main="Trace Plot of theta")
+abline(h = mean(output$theta), col='red', lwd=2)
+```
+
+
+OLD GIBBY
+```{r}
+gibby = function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000, n_burnin = 1) {
+  # Gather true data
+  player_dat = data[data$PLAYER_ID == player_id, ]
+  player_dat = player_dat[player_dat$Opposing_Team_Name_ID == opp_team_id, ]
+  true_y = player_dat$FGM
+  true_n = player_dat$FGA
+  DRTG_var = data$centered_OPP_DRTG[1]
+  
+  # initial value setup
+  p = inits$p
+  n = inits$n
+  r = inits$r
+  theta = inits$theta
+  
+  # Save structure (REVIEW)
+  n_keep = numeric(n_iter)
+  p_keep = numeric(n_iter)
+  r_keep = numeric(n_iter)
+  theta_keep = numeric(n_iter)
+  
+  # Proposal variances (TODO)
+  prop_n_sd = prop_sd$n
+  prop_r_sd = prop_sd$r
+  
+  # Gibbs sampler main
+  for (i in 1:n_iter) {
+    # Generate p
+    pi = rbeta(1,5+sum(true_y), 5+sum(n - true_y))
     p = min(1, pi * exp(psi * DRTG_var))
     
     # Generate n
@@ -224,7 +320,7 @@ gibby = function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000,
       r <- prop_r
     }
     # generate theta
-    theta = rbeta(1, (sum(true_n)+ (1/2)), (r - 1))
+    theta = rbeta(1, (sum(n)+ (1/2)), (r - 1))
     
     # Save values 
     
@@ -238,10 +334,9 @@ gibby = function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000,
   return(output)
 }
 
-#function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000)
-inits=list(p = 0.5,
-           n = 20,
-           r = 20,
+inits=list(p = 0.7,
+           n = 25,
+           r = 25,
            theta = 0.5)
 prop_sd = list(n = 0.5, r = 2)
 n_iter = 11000
@@ -249,15 +344,17 @@ n_burnin = 1000
 output = suppressWarnings(gibby(starting_dat, inits, prop_sd = prop_sd,
                                 psi=0.1, player_id = 2544, opp_team_id = 1610612746,
                                 n_iter=n_iter, n_burnin = n_burnin))
-```
 
-```{r}
 # Diagnostics
 plot(y=output$n, x = 1:length(output$n), type = 'l', main="Trace Plot of n")
 # plot(as.mcmc(output$n), main="n")
 abline(h = mean(output$n), col='red', lwd=2)
+abline(h = mean(true_dat$FGA), col='blue', lwd=2)
+
 plot(y=output$p, x = 1:length(output$n), type = 'l', main="Trace Plot of p")
 abline(h = mean(output$p), col='red', lwd=2)
+abline(h = mean(true_dat$FG_PCT), col='blue', lwd=2)
+
 plot(y=output$r, x = 1:length(output$n), type = 'l', main="Trace Plot of r")
 abline(h = mean(output$r), col='red', lwd=2)
 plot(y=output$theta, x = 1:length(output$n), type = 'l', main="Trace Plot of theta")
@@ -265,25 +362,3 @@ abline(h = mean(output$theta), col='red', lwd=2)
 ```
 
 
-
-```{r}
-# Testing and monitoring code, please ignore
-# keep_n = matrix(nrow = 100, ncol = 10)
-# prop_n_sd = 1:10
-# for (j in 1:length(prop_n_sd)) {
-#   n = 20
-#   for (i in 1:100) {
-#     # Generate n
-#     prop_n = round(rnorm(1, mean=n, sd = prop_n_sd[j])) # round to ensure its integer, using r as thats what Dr. Niemi did 
-#     logn = log_n_func(n=prop_n, r, true_y, theta, p) - log_n_func(n=n, r, true_y, theta, p)
-#     if (is.finite(logn) && log(runif(1)) < logn) {
-#       n <- prop_n
-#     }
-#     keep_n[i,j] = n
-#   }
-# }
-# 
-# 
-# plot(as.mcmc(keep_n), main="n")
-# # cat("starting is:", base_r, " proposed is:", prop_r, "final is:", r)
-```

@@ -1,9 +1,8 @@
 ---
-title: "Model 1 fixed"
+title: "Model 1: Fixed"
 author: "Ben Moolman, Craig Orman, Ethan Pross"
 output: pdf_document
 ---
-
 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE}
 library(dplyr)
@@ -13,116 +12,64 @@ library(ggplot2)
 library(coda)
 ```
 
-## Beginning Data preparing
+# Data Prep and Cleaning
 
-```{r, warning = FALSE, message = FALSE, echo = FALSE}
-original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv")
-
-
-original_tbl <- mutate(original_tbl,
-                       START_POSITION = na_if(START_POSITION, ""),
-                       START_POSITION = factor(original_tbl$START_POSITION),
-                       COMMENT = na_if(COMMENT, ""),
-                       COMMENT = factor(original_tbl$COMMENT),
-                       MIN = na_if(MIN, ""),
-                       MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:"),
-                       )
-
-starting_dat = original_tbl[original_tbl$START_POSITION != "",]
-lebron_vs_steph_games = c(22300650, 22300973, 22301155)
-
-# Code to add in opposing team
-
-game_registry <- distinct(starting_dat[,c(2,3, 4)]) %>%
-  group_by(GAME_ID) %>%
-  arrange(TEAM_ID, .by_group = TRUE) %>%
-  mutate(slot = paste0("TEAM", row_number())) %>%
-  pivot_wider(
-    names_from = slot,
-    values_from = c(TEAM_ID, TEAM_ABBREVIATION),
-    names_sep = "_"
+```{r, warning = FALSE}
+# Load and clean data
+original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv") |>
+  mutate(
+    START_POSITION = na_if(START_POSITION, "") |> factor(),
+    COMMENT = na_if(COMMENT, "") |> factor(),
+    MIN = na_if(MIN, ""),
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
   )
 
-colnames(game_registry) <- c("Game_ID", "Team_1_ID", "Team_2_ID", "Team_1_Abbrev", "Team_2_Abbrev")
+# Filter to starters only
+starting_dat <- original_tbl |>
+  filter(!is.na(START_POSITION))
 
-
-starting_dat$Opposing_Team_Name_ID = NA
-starting_dat$Opposing_Team_Name = NA
-
-starting_dat <- starting_dat %>%
-  left_join(game_registry, by = c("GAME_ID" = "Game_ID")) %>%
-  mutate(
-    Opposing_Team_Name_ID = if_else(
-      TEAM_ID == Team_1_ID, Team_2_ID,
-      if_else(TEAM_ID == Team_2_ID, Team_1_ID, NA_integer_)
-    ),
-    Opposing_Team_Name = if_else(
-      TEAM_ID == Team_1_ID, Team_2_Abbrev,
-      if_else(TEAM_ID == Team_2_ID, Team_1_Abbrev, NA_character_)
-    )
-  ) %>%
-  select(-Team_1_ID, -Team_2_ID, -Team_1_Abbrev, -Team_2_Abbrev)
-
-```
-
-```{r, warning=FALSE}
-## Ben's DRTG code!
-# Calculate total points per team per game
-# here, datatest2 is the entire data frame that is not filtered for starters
-# filtering dataset to remove NAs which arise a player doesnt record any minutes in the game (sitting out)
-team_points <- na.omit(original_tbl) %>%
-  group_by(GAME_ID, TEAM_ID) %>%
+# Calculate team points per game
+team_points <- original_tbl |>
+  filter(!is.na(PTS)) |>
+  group_by(GAME_ID, TEAM_ID) |>
   summarize(TeamPoints = sum(PTS), .groups = "drop")
 
-# 
-team_points_opponent <- team_points %>%
-  rename(OPP_TEAM_ID = TEAM_ID, OpponentPoints = TeamPoints)
+# Join with itself to get opponent points
+team_vs_opponent <- team_points |>
+  inner_join(team_points, by = "GAME_ID", suffix = c("", ".opp")) |>
+  filter(TEAM_ID != TEAM_ID.opp) |>
+  rename(OPP_TEAM_ID = TEAM_ID.opp, OpponentPoints = TeamPoints.opp)
 
-# join and filter
-team_vs_opponent <- team_points %>%
-  inner_join(team_points_opponent, by = "GAME_ID") %>%
-  filter(TEAM_ID != OPP_TEAM_ID)
-
-# calculate average opponent points per team (our DRTG)
-team_drtg <- team_vs_opponent %>%
-  group_by(TEAM_ID) %>%
+# Compute average opponent points allowed per team (DRTG)
+team_drtg <- team_vs_opponent |>
+  group_by(TEAM_ID) |>
   summarize(DRTG_proxy = mean(OpponentPoints), n_games = n(), .groups = "drop")
 
-range(team_drtg$DRTG_proxy)
-mean(team_drtg$DRTG_proxy)
-```
-DRTG data being joined to the starting data
-
-```{r, warning=FALSE}
-## NOW ADDING DRTG vars to original_tbl
-
-
-# Each team plays one opponent per game, so we pair them like this:
-game_team_pairs <- original_tbl %>%
-  select(GAME_ID, TEAM_ID) %>%
+# Build opponent_map from distinct team-game pairs
+game_team_pairs <- original_tbl |>
+  select(GAME_ID, TEAM_ID) |>
   distinct()
 
-# Join to get each game twice: once for each team, with their opponent
-opponent_map <- game_team_pairs %>%
-  inner_join(game_team_pairs, by = "GAME_ID") %>%
-  filter(TEAM_ID.x != TEAM_ID.y) %>%
+# Create mapping of TEAM_ID and OPP_TEAM_ID for each game
+opponent_map <- game_team_pairs |>
+  inner_join(game_team_pairs, by = "GAME_ID") |>
+  filter(TEAM_ID.x != TEAM_ID.y) |>
   rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y)
 
-# Add opponent DRTG to the mapping
-opponent_map <- opponent_map %>%
-  left_join(team_drtg %>% rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy),
-            by = "OPP_TEAM_ID")
+# Join with defensive ratings (DRTG)
+opponent_map <- opponent_map |>
+  left_join(team_drtg |> rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy), by = "OPP_TEAM_ID")
 
-# Join to add opponent DRTG column to the full data
-starting_dat <- starting_dat %>%
-  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID"))
 
+# Merge opponent info into starting dataset and center DRTG
 mean_drtg <- mean(team_drtg$DRTG_proxy)
-starting_dat <- starting_dat %>%
+
+starting_dat <- starting_dat |>
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID")) |>
   mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
 ```
 
-## Model 1 implementation
+# Model 1 implementation
 
 Situation: 
 $$
@@ -134,25 +81,7 @@ $$
 \end{aligned}
 $$
 
-Set up
-
-```{r}
-# Filters for just LeBron games (71 games played by LeBron)
-lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
-
-# Gets centered_OPP_DRTG for each team LeBron played against (28 total teams)
-lebron_team_drtg <- lebron_dat %>%
-  group_by(OPP_TEAM_ID) %>%
-  summarize(centered_OPP_DRTG = first(centered_OPP_DRTG), .groups = "drop") %>%
-  arrange(OPP_TEAM_ID)
-
-# Get the field goal percentage for LeBron over the 71 games
-true_p = mean(lebron_dat$FG_PCT)
-# Get the mean number of field goals attempted per game
-n_median = median(lebron_dat$FGA)
-```
-
-Metropolis Hastings implementation to Obtain p_i
+## Metropolis Hastings Implementation to Obtain p_i
 
 ```{r}
 log_q = function(theta, y, n) {
@@ -193,9 +122,23 @@ MH_beta_grid_search = function(current = 0.5, n_vec, y_vec, n_iter = 1000) {
 }
 ```
 
-Now run MH
+## Data Prep for Exploring LeBron James vs GSW (Golden State Warriors)
 
 ```{r}
+# Filter to LeBron James's games
+# LeBron PLAYER_ID is 2544
+lebron_dat <- starting_dat |> 
+  filter(PLAYER_ID == 2544)
+
+# Centered DRTG values for each opponent team LeBron faced
+# Only has 28 rows because LeBron only played against 28 out of 30 NBA teams
+# LeBron did not play against Milwaukee Bucks (or the Lakers, his own team)
+lebron_team_drtg <- lebron_dat |>
+  group_by(OPP_TEAM_ID) |>
+  summarize(centered_OPP_DRTG = first(centered_OPP_DRTG), .groups = "drop") |>
+  arrange(OPP_TEAM_ID)
+
+# Store response and trial vectors
 Y <- lebron_dat$FGM
 N_vec <- lebron_dat$FGA
 
@@ -207,8 +150,8 @@ mh_result <- MH_beta_grid_search(current = 0.5,
 p_samples <- mh_result$samples
 mh_result$best_sd  # tuning parameter chosen
 
-drtg_vec <- lebron_team_drtg$centered_OPP_DRTG  # length = 28
-gamma_val <- 0.01
+drtg_vec <- lebron_team_drtg$centered_OPP_DRTG
+gamma_val <- 0.01 # fixed tuning value
 
 # Compute p_ik matrix: rows = posterior draws, cols = opponent teams
 p_ik_matrix <- outer(
@@ -254,6 +197,10 @@ gamma_val <- 0.01  # fixed tuning value
 p_ik_gsw <- p_samples * exp(gamma_val * drtg_gsw)
 p_ik_gsw <- pmin(p_ik_gsw, 1)  # ensure FG% stays within [0,1]
 
+mean(p_ik_gsw)
+
+quantile(p_ik_gsw, c(0.025, 0.975))
+
 # FGAs for LeBron
 n_mean <- round(mean(lebron_dat$FGA, na.rm = TRUE))
 n_median <- round(median(lebron_dat$FGA, na.rm = TRUE))
@@ -286,113 +233,3 @@ hist(fgm_sim_max,
      col = "lightgreen", breaks = 15)
 abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
 ```
-
-Interpretation and Generalization
-
-This simulation estimates the \textbf{posterior predictive distribution} of field goals made (FGM) for a given player \( i \) (in this case, LeBron James) when matched against a specific opponent team \( k \) (here, the Golden State Warriors). The distribution reflects:
-
-\begin{itemize}
-  \item Uncertainty in the player's overall shooting ability \( p_i \),
-  \item Game-to-game variability in performance, and
-  \item Adjustments for the defensive strength of the opposing team via the centered DRTG metric.
-\end{itemize}
-
-This framework can be generalized to \textit{any} player \( i \) and \textit{any} opponent \( k \) in the dataset. By sampling from the posterior of \( p_i \), scaling it by the opponent's centered DRTG using \( \gamma \), and drawing from a binomial distribution with a fixed \( n_i \), we obtain predictive in-game outcomes tailored to individual matchups.
-
-
-
-
-
-
-
-
-
-## Model 1 implementation
-
-Situation: 
-$$
-\begin{aligned}
-  y_{ijk} &\sim Binom(n_{ijk}, p_{ik})\\
-  n_{ijk} &\sim \text{by model}\\
-  p_{ik} &= p_i \times \text{exp}(\gamma (\text{DRTG}_k - \bar{\text{DRTG}}))\\
-  p_{i} &\sim Beta(5,5)
-\end{aligned}
-$$
-
-Set up
-
-```{r}
-lebron_dat = starting_dat[starting_dat$PLAYER_ID %in% 2544, ]
-model_1_dat = lebron_dat[lebron_dat$GAME_ID %in% lebron_vs_steph_games,] # This basically turned out to be too small of a dataset to do much with...
-Y = lebron_dat$FGM
-N = nrow(lebron_dat)
-true_p = mean(lebron_dat$FG_PCT)
-n_median = median(lebron_dat$FGA)
-```
-
-Metropolis Hastings implementation
-
-```{r}
-#This is the uhhhh posterior I think
-log_q = function(theta, y=3, n=10) {
-  if (theta<0 | theta>1) return(-Inf)
-  (y-0.5)*log(theta)+(n-y-0.5)*log(1-theta)
-}
-
-# This runs the Metropolis hastings algorithm
-MH_beta_binom = function(current = 0.5, prop_sd, n = n) {
-  current = 0.5 # Initial value
-  samps = rep(NA,N)
-  for (i in 1:N) {
-    proposed = rnorm(1, current, prop_sd) # tuning parameter goes here
-    logr = log_q(proposed, y=Y[i], n=n)-log_q(current, y=Y[i], n=n)
-    if (log(runif(1)) < logr) current = proposed #comparitor
-    samps[i] = current
-  }
-  paste("Acceptance Rate: ", length(unique(samps))/n)
-  return(samps)
-}
-
-# This is such a grid search of the MH using a variety of Proposed SDs
-# and choosing the best one to maximize the effective sample size
-MH_beta_grid_serach = function(current = 0.5, n) {
-  vals = seq(from=0.01, to = 20, by = 0.01)
-  effect_sizes = data.frame(sd = vals, effect_size = NA)
-  for (i in 1:length(vals)) {
-    samps = MH_beta_binom(prop_sd = vals[i], n=n)
-    effect_sizes[i,2] = effectiveSize(samps)
-  }
-  best_sd = effect_sizes$sd[effect_sizes$effect_size == max(effect_sizes$effect_size)] #select best sd option
-  return(MH_beta_binom(prop_sd = best_sd, n=n))
-}
-```
-
-
-So basically, I don't think I did the predictive posterior correctly. And also, we have low ESS and the y's don't fit the best! For shame team, for shame.
-
-```{r}
-
-n_mean = round(mean(lebron_dat$FGA)) #NAs casue mean is not an integer
-samps = MH_beta_grid_serach(n=n_mean)
-yhat <- rbinom(1000, n_mean, mean(samps))
-hist(yhat)
-abline(v = mean(Y), col = "red", lwd = 2)
-```
-
-
-```{r}
-n_median = median(lebron_dat$FGA)
-samps = MH_beta_grid_serach(n=n_median)
-yhat <- rbinom(1000, n_median, mean(samps))
-hist(yhat)
-abline(v = mean(Y), col = "red", lwd = 2)
-```
-
-```{r}
-n_max = max(lebron_dat$FGA)
-samps = MH_beta_grid_serach(n=n_max)
-yhat <- rbinom(1000, n_max, mean(samps))
-hist(yhat)
-abline(v = mean(Y), col = "red", lwd = 2)
-```
-
