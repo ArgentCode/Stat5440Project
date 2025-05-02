@@ -106,7 +106,7 @@ MH_beta_grid_search = function(current = 0.5, n_vec, y_vec, n_iter = 1000) {
   
   for (i in seq_along(vals)) {
     samps <- MH_beta_binom(current = current, prop_sd = vals[i], 
-                           n_vec = n_vec, y_vec = y_vec, n_iter = n_iter)
+                           n_vec = n_vec, y_vec = y_vec, n_iter = 5000)
     effect_sizes$ess[i] <- effectiveSize(samps)
   }
   
@@ -141,11 +141,12 @@ lebron_team_drtg <- lebron_dat |>
 # Store response and trial vectors
 Y <- lebron_dat$FGM
 N_vec <- lebron_dat$FGA
+n_iter = 100000
 
 mh_result <- MH_beta_grid_search(current = 0.5, 
                                  y_vec = Y, 
                                  n_vec = N_vec, 
-                                 n_iter = 1000)
+                                 n_iter = n_iter)
 
 p_samples <- mh_result$samples
 mh_result$best_sd  # tuning parameter chosen
@@ -233,3 +234,29 @@ hist(fgm_sim_max,
      col = "lightgreen", breaks = 15)
 abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
 ```
+
+Predictive posterior
+
+```{r}
+player_dat = lebron_dat[lebron_dat$OPP_TEAM_ID == 1610612744,]
+# setup / data
+lebron_GSW_n<- player_dat$FGA
+lebron_mean_n<- mean(lebron_GSW_n)
+lebron_median_n<- median(lebron_GSW_n)
+lebron_max_n<- max(lebron_GSW_n)
+lebron_GSW_p<- player_dat$FG_PCT
+lebron_GSW_y<- player_dat$FGM
+
+# And go!
+burnin = 10000
+y_new = rbinom(n_iter-burnin, n_max, p_samples[burnin:n_iter])
+
+par(mfrow=c(1,2))
+hist(y_new,xlim=c(0,25))
+abline(v=mean(lebron_GSW_y), col='red', lwd=2, xlab="FGM")
+hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(lebron_GSW_p)),xlim=c(0,25), main="based off of lebron's 3 GSW games", xlab="FGM")
+abline(v=mean(lebron_GSW_y), col='red', lwd=2, xlab="FGM")
+
+model_1_sample = rbinom(n_iter-burnin, n_max, p_samples[burnin:n_iter]) 
+```
+

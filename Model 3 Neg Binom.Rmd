@@ -120,7 +120,8 @@ log_r_con = function(n, r, theta, y) {
   }
 }
 mcmc_model_3 = function(data, player_id, opp_team_id, gamma = 0.01,
-                        n_iter=5000, init_r, init_theta, init_n, init_p) {
+                        n_iter=5000, init_r, init_theta, init_n, init_p,
+                        prop_r_sd = 3.5, prop_n_sd = 3.5) {
   # Gather true data
   player_dat = data[data$PLAYER_ID == player_id, ]
   player_dat = player_dat[player_dat$OPP_TEAM_ID == opp_team_id, ]
@@ -143,14 +144,14 @@ mcmc_model_3 = function(data, player_id, opp_team_id, gamma = 0.01,
   
   for (i in 1:n_iter) {
     # sample p
-    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(n-y))
+    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(true_n-y))
     p<- p_unscaled*def_factor
     
     # sample theta
     theta<- rbeta(1,sum(n)+1/2,r-1)
     
     # sample r
-    r_prop<- rnorm(1, r, 1) # the third 1 is a tuning parameter
+    r_prop<- rnorm(1, r, prop_r_sd) # the third 1 is a tuning parameter
     logr<- log_r_con(n, r_prop, theta, y)-log_r_con(n, r, theta, y)
     if (is.finite(logr)) {
       if (log(runif(1))<logr) {
@@ -159,7 +160,7 @@ mcmc_model_3 = function(data, player_id, opp_team_id, gamma = 0.01,
     }
     
     # sample n
-    n_prop<- rnorm(big_N, n, 1) # the third 1 is a tuning parameter
+    n_prop<- rnorm(big_N, n, prop_n_sd) # the third 1 is a tuning parameter
     logr<- log_n_con(n_prop, r, theta, y,p)-log_n_con(n, r, theta, y,p)
     for (j in 1:length(logr)) {
       if (is.finite(logr[j])) {
@@ -202,7 +203,7 @@ GSW_DRTG<- 115.1585
 mean_DRTG<- 114.2114
 gamma<-0.01
 factor_gsw<- exp(gamma*(GSW_DRTG-mean_DRTG))
-n_iter<- 10000
+n_iter<- 100000
 init_r<- max(lebron_GSW_n) # maybe tune?
 init_theta<- mean(lebron_GSW_p) # maybe tune ?
 init_p<- mean(lebron_GSW_p) # maybe tune ?
@@ -210,7 +211,8 @@ init_n<- round(mean(lebron_GSW_n)) #maybe tune ?
 
 
 MCMC_model_3 = suppressWarnings(mcmc_model_3(starting_dat, player_id = 2544, opp_team_id = 1610612744, gamma=0.01,
-                            n_iter=100000, init_r,init_theta,init_n,init_p))
+                            n_iter=n_iter, init_r,init_theta,init_n,init_p,
+                            prop_r_sd=3.7, prop_n_sd = 3.7))
 MCMC_model_3
 
 ```
@@ -225,9 +227,9 @@ MCMC_model_3
 par(mfrow=c(3,3))
 plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="r")],type="l",main="r with burnin",ylab="value")
 plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="theta")],type="l",main="theta burnin",ylab="value")
-plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")],type="l",main="p burnin",ylab="value")
-plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")],type="l",main="p burnin",ylab="value")
-plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")],type="l",main="p burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")],type="l",main="p1 burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")],type="l",main="p2 burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")],type="l",main="p3 burnin",ylab="value")
 plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")]),type="l",main="n[1] burnin",ylab="value")
 plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")]),type="l",main="n[2] burnin",ylab="value")
 plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")]),type="l",main="n[3] burnin",ylab="value")
@@ -253,26 +255,28 @@ MCMC_model_3_culled<- data.frame(iteration = rep(iter_index,length(parameter_ind
 par(mfrow=c(2,3))
 plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="r")],type="l",main="r culled",ylab="value")
 plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="theta")],type="l",main="theta culled",ylab="value")
-plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[1]")],type="l",main="p culled",ylab="value")
-plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[2]")],type="l",main="p culled",ylab="value")
-plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[3]")],type="l",main="p culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[1]")],type="l",main="p1 culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[2]")],type="l",main="p2 culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[3]")],type="l",main="p3 culled",ylab="value")
 plot(round(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="n[1]")]),type="l",main="n[1] culled",ylab="value")
 plot(round(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="n[2]")]),type="l",main="n[2] culled",ylab="value")
 plot(round(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="n[3]")]),type="l",main="n[3] culled",ylab="value")
 
 
 ### I don't think this is actually the Predictive Posterior
-# 
-# # getting the 10000 p's for sampling
-# posterior_mean_ps<- MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p")]
-# # getting the 10000 n's for sampling
-# posterior_mean_ns<- round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
-# # making the y's using our posterior sample
-# y_model_3_v2<- rbinom(n_iter,posterior_mean_ns,posterior_mean_ps)
-# par(mfrow=c(1,2))
-# #hist of distribution based off our samples
-# hist(y_model_3_v2,xlim=c(0,20),main="using samples")
-# #compare to a hist of lebron's games against GSW using observed values
-# hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(lebron_GSW_p)),xlim=c(0,20), main="based off of lebron's 3 GSW games")
+
+# getting the 10000 p's for sampling
+posterior_mean_ps<- apply(data.frame(p1_culled,p2_culled,p3_culled),1,mean)
+# getting the 10000 n's for sampling
+posterior_mean_ns<- round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
+# making the y's using our posterior sample
+y_model_3_v2<- rbinom(n_iter,posterior_mean_ns,posterior_mean_ps)
+par(mfrow=c(1,2))
+#hist of distribution based off our samples
+hist(y_model_3_v2,xlim=c(0,25),main="using samples")
+# abline(v=mean(lebron_GSW_y), col='red', lwd=2, "Sampled FGM")
+#compare to a hist of lebron's games against GSW using observed values
+hist(rbinom(n_iter-burnin,round(mean(lebron_GSW_n)),mean(lebron_GSW_p)),xlim=c(0,25), main="based off of lebron's 3 GSW games")
+# abline(v=mean(lebron_GSW_y), col='red', lwd=2, xlab="FGM")
 ```
 

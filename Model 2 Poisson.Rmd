@@ -104,6 +104,8 @@ mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000,
   p_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
   lambda_list<- rep(lambda, n_iter)
   n_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  y_new_list <- rep(NA, n_iter)
+  n_new_list <- rep(NA, n_iter)
   
   for (i in 1:n_iter) {
     # sample p
@@ -121,14 +123,21 @@ mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000,
         n[j]<- n_prop[j]
       }
     }
+    
+    # generate new values
+    n_new = rpois(1, lambda)
+    y_new <- rbinom(1, size = n_new, prob = mean(p))
+    
     # save values
     p_matrix[i,] = p
     n_matrix[i,] = n
     lambda_list[i] = lambda
+    n_new_list[i] = n_new
+    y_new_list[i] =  y_new
   }
   return(data.frame(iteration=1:n_iter,
-                    parameter=rep(c(paste("n[",1:big_N,"]", sep=""), "lambda", paste("p[",1:big_N,"]", sep="")), each=n_iter),
-                    value=c(as.numeric(n_matrix),lambda_list, as.numeric(p_matrix))))
+                    parameter=rep(c(paste("n[",1:big_N,"]", sep=""), "lambda", "n_new", "y_new", paste("p[",1:big_N,"]", sep="")), each=n_iter),
+                    value=c(as.numeric(n_matrix),lambda_list,n_new_list,y_new_list, as.numeric(p_matrix))))
 }
 # running mcmc
 n_iter<- 10000
@@ -175,6 +184,14 @@ plot(p1,type="l",main="p[1]")
 plot(p2,type="l",main="p[2]")
 plot(p3,type="l",main="p[3]")
 
+####
+
+n_new<- MCMC_model_2$value[which(MCMC_model_2$parameter=="n_new")]
+y_new<- MCMC_model_2$value[which(MCMC_model_2$parameter=="y_new")]
+plot(n_new,type="l",main="n_new")
+abline(h=mean(lebron_GSW_n), col='red', lwd=2)
+plot(y_new,type="l",main="y_new")
+abline(h=mean(lebron_GSW_y), col='red', lwd=2)
 
 ### I don't think this is actually the Predictive Posterior
 posterior_mean_ps<- apply(data.frame(p1,p2,p3),1,mean)
@@ -185,5 +202,7 @@ par(mfrow=c(1,2))
 #hist of distribution based off our samples
 hist(y_model_2,xlim=c(0,25),main="using samples", xlab="FGM")
 #compare to a hist of lebron's games against GSW using observed values
+par(mfrow=c(1,2))
+hist(y_new,xlim=c(0,25))
 hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(lebron_GSW_p)),xlim=c(0,25), main="based off of lebron's 3 GSW games", xlab="FGM")
 ```
