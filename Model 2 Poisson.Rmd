@@ -132,10 +132,12 @@ mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000,
 }
 # running mcmc
 n_iter<- 10000
-MCMC_model_2 = mcmc_model_2(data = starting_dat, player_id = 2544, #LeBron
+MCMC_model_2 = mcmc_model_2(data = starting_dat,
+                            player_id = 2544, #LeBron
                             opp_team_id = 1610612744, #GSW
                             n_iter=10000,
                             gamma=0.01) #Previously found to be good value
+
 ```
 
 # Model Diagnostics

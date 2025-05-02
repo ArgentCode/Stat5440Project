@@ -13,116 +13,65 @@ library(ggplot2)
 library(coda)
 ```
 
-## Beginning Data preparing
 
-```{r, warning = FALSE, message = FALSE, echo = FALSE}
-original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv")
+# Data Prep and Cleaning
 
-
-original_tbl <- mutate(original_tbl,
-                       START_POSITION = na_if(START_POSITION, ""),
-                       START_POSITION = factor(original_tbl$START_POSITION),
-                       COMMENT = na_if(COMMENT, ""),
-                       COMMENT = factor(original_tbl$COMMENT),
-                       MIN = na_if(MIN, ""),
-                       MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:"),
-                       )
-
-starting_dat = original_tbl[original_tbl$START_POSITION != "",]
-lebron_vs_steph_games = c(22300650, 22300973, 22301155)
-
-# Code to add in opposing team
-
-game_registry <- distinct(starting_dat[,c(2,3, 4)]) %>%
-  group_by(GAME_ID) %>%
-  arrange(TEAM_ID, .by_group = TRUE) %>%
-  mutate(slot = paste0("TEAM", row_number())) %>%
-  pivot_wider(
-    names_from = slot,
-    values_from = c(TEAM_ID, TEAM_ABBREVIATION),
-    names_sep = "_"
+```{r, warning = FALSE}
+# Load and clean data
+original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv") |>
+  mutate(
+    START_POSITION = na_if(START_POSITION, "") |> factor(),
+    COMMENT = na_if(COMMENT, "") |> factor(),
+    MIN = na_if(MIN, ""),
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
   )
 
-colnames(game_registry) <- c("Game_ID", "Team_1_ID", "Team_2_ID", "Team_1_Abbrev", "Team_2_Abbrev")
+# Filter to starters only
+starting_dat <- original_tbl |>
+  filter(!is.na(START_POSITION))
 
-
-starting_dat$Opposing_Team_Name_ID = NA
-starting_dat$Opposing_Team_Name = NA
-
-starting_dat <- starting_dat %>%
-  left_join(game_registry, by = c("GAME_ID" = "Game_ID")) %>%
-  mutate(
-    Opposing_Team_Name_ID = if_else(
-      TEAM_ID == Team_1_ID, Team_2_ID,
-      if_else(TEAM_ID == Team_2_ID, Team_1_ID, NA_integer_)
-    ),
-    Opposing_Team_Name = if_else(
-      TEAM_ID == Team_1_ID, Team_2_Abbrev,
-      if_else(TEAM_ID == Team_2_ID, Team_1_Abbrev, NA_character_)
-    )
-  ) %>%
-  select(-Team_1_ID, -Team_2_ID, -Team_1_Abbrev, -Team_2_Abbrev)
-
-```
-
-```{r, warning=FALSE}
-## Ben's DRTG code!
-# Calculate total points per team per game
-# here, datatest2 is the entire data frame that is not filtered for starters
-# filtering dataset to remove NAs which arise a player doesnt record any minutes in the game (sitting out)
-team_points <- na.omit(original_tbl) %>%
-  group_by(GAME_ID, TEAM_ID) %>%
+# Calculate team points per game
+team_points <- original_tbl |>
+  filter(!is.na(PTS)) |>
+  group_by(GAME_ID, TEAM_ID) |>
   summarize(TeamPoints = sum(PTS), .groups = "drop")
 
-# 
-team_points_opponent <- team_points %>%
-  rename(OPP_TEAM_ID = TEAM_ID, OpponentPoints = TeamPoints)
+# Join with itself to get opponent points
+team_vs_opponent <- team_points |>
+  inner_join(team_points, by = "GAME_ID", suffix = c("", ".opp")) |>
+  filter(TEAM_ID != TEAM_ID.opp) |>
+  rename(OPP_TEAM_ID = TEAM_ID.opp, OpponentPoints = TeamPoints.opp)
 
-# join and filter
-team_vs_opponent <- team_points %>%
-  inner_join(team_points_opponent, by = "GAME_ID") %>%
-  filter(TEAM_ID != OPP_TEAM_ID)
-
-# calculate average opponent points per team (our DRTG)
-team_drtg <- team_vs_opponent %>%
-  group_by(TEAM_ID) %>%
+# Compute average opponent points allowed per team (DRTG)
+team_drtg <- team_vs_opponent |>
+  group_by(TEAM_ID) |>
   summarize(DRTG_proxy = mean(OpponentPoints), n_games = n(), .groups = "drop")
 
-range(team_drtg$DRTG_proxy)
-mean(team_drtg$DRTG_proxy)
-```
-DRTG data being joined to the starting data
-
-```{r, warning=FALSE}
-## NOW ADDING DRTG vars to original_tbl
-
-
-# Each team plays one opponent per game, so we pair them like this:
-game_team_pairs <- original_tbl %>%
-  select(GAME_ID, TEAM_ID) %>%
+# Build opponent_map from distinct team-game pairs
+game_team_pairs <- original_tbl |>
+  select(GAME_ID, TEAM_ID) |>
   distinct()
 
-# Join to get each game twice: once for each team, with their opponent
-opponent_map <- game_team_pairs %>%
-  inner_join(game_team_pairs, by = "GAME_ID") %>%
-  filter(TEAM_ID.x != TEAM_ID.y) %>%
+# Create mapping of TEAM_ID and OPP_TEAM_ID for each game
+opponent_map <- game_team_pairs |>
+  inner_join(game_team_pairs, by = "GAME_ID") |>
+  filter(TEAM_ID.x != TEAM_ID.y) |>
   rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y)
 
-# Add opponent DRTG to the mapping
-opponent_map <- opponent_map %>%
-  left_join(team_drtg %>% rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy),
-            by = "OPP_TEAM_ID")
+# Join with defensive ratings (DRTG)
+opponent_map <- opponent_map |>
+  left_join(team_drtg |> rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy), by = "OPP_TEAM_ID")
 
-# Join to add opponent DRTG column to the full data
-starting_dat <- starting_dat %>%
-  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID"))
 
+# Merge opponent info into starting dataset and center DRTG
 mean_drtg <- mean(team_drtg$DRTG_proxy)
-starting_dat <- starting_dat %>%
+
+starting_dat <- starting_dat |>
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID")) |>
   mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
 ```
 
-## Model 3 implementation
+# Model 3 implementation
 
 $$
 \begin{aligned}
@@ -153,212 +102,177 @@ $$
 So for this, we kinda have a full thingy set up?
 
 ```{r}
-# Data and prior
-# 2544 is Lebron's player id 
-# 1610612744 is GSw, Steph Curry's team
-
-log_n_func = function(n, r, y, theta, p){
-  sum(log(factorial(n+r-1)))- sum(log(factorial(n-y))) + sum(n)*log(1-theta) +sum(n) * log(1-p)
+### MODEL 3 ###
+log_n_con = function(n, r, theta, y,p) {
+  dummy<- sum(log((factorial(n+r-1)))) - sum(log((factorial(n-y)))) + log((1-theta)*((1-p)^sum(n)))
+  if (all(is.nan(dummy))){
+    return(rep(-Inf,length(n)))
+  }else{
+    return(dummy)
+  }
 }
-
-log_r_func = function(r, n, y, theta, p) {
-  sum(log(factorial(n+r-1)))-sum(log(factorial(r-1)))+sum(r*log(theta))+log(r)/2
+log_r_con = function(n, r, theta, y) {
+  dummy<- sum(log((factorial(n+r-1)))) - sum(log((factorial(r-1)))) + log(theta^sum(r)) + log(r^(length(y)/2))
+  if (all(is.nan(dummy))){
+    return(rep(-Inf,length(r)))
+  }else{
+    return(dummy)
+  }
 }
+mcmc_model_3 = function(data, player_id, opp_team_id, gamma = 0.01,
+                        n_iter=5000, init_r, init_theta, init_n, init_p) {
+  # Gather true data
+  player_dat = data[data$PLAYER_ID == player_id, ]
+  player_dat = player_dat[player_dat$OPP_TEAM_ID == opp_team_id, ]
+  y = player_dat$FGM
+  true_n = player_dat$FGA
+  def_factor<- exp(gamma*(data$centered_OPP_DRTG[1]))
+  
+  # Start code
+  big_N<- length(y)
+  r<- init_r
+  theta<- init_theta
+  n<- rep(init_n,big_N)
+  p<- init_p
+  
+  # setting up lists/matrices for returning
+  r_list<- rep(NA, n_iter)
+  theta_list<- rep(NA, n_iter)
+  p_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  n_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  
+  for (i in 1:n_iter) {
+    # sample p
+    p_unscaled<- rbeta(big_N, 5 + sum(y), 5 + sum(n-y))
+    p<- p_unscaled*def_factor
+    
+    # sample theta
+    theta<- rbeta(1,sum(n)+1/2,r-1)
+    
+    # sample r
+    r_prop<- rnorm(1, r, 1) # the third 1 is a tuning parameter
+    logr<- log_r_con(n, r_prop, theta, y)-log_r_con(n, r, theta, y)
+    if (is.finite(logr)) {
+      if (log(runif(1))<logr) {
+        r<- r_prop
+      }
+    }
+    
+    # sample n
+    n_prop<- rnorm(big_N, n, 1) # the third 1 is a tuning parameter
+    logr<- log_n_con(n_prop, r, theta, y,p)-log_n_con(n, r, theta, y,p)
+    for (j in 1:length(logr)) {
+      if (is.finite(logr[j])) {
+        if (log(runif(1))<logr[j]) {
+          n[j]<- n_prop[j]
+        }
+      }
+    }
 
-#### RESETING COMMANDS START
-
+    # save values
+    r_list[i] = r
+    theta_list[i] = theta
+    p_matrix[i,] = p
+    n_matrix[i,] = n
+  }
+  # return(data.frame(iteration=1:n_iter,
+  #                   r = r_list,
+  #                   theta = theta_list,
+  #                   p1 = p_matrix[,1],
+  #                   p2 = p_matrix[,2],
+  #                   p3 = p_matrix[,3],
+  #                   n1 = n_matrix[,1],
+  #                   n2 = n_matrix[,2],
+  #                   n3 = n_matrix[,3]))
+  return(data.frame(iteration=1:n_iter,
+                    parameter=rep(c("r","theta",paste("p[",1:big_N,"]", sep=""),paste("n[",1:big_N,"]", sep="")),each=n_iter),
+                    value=c(r_list,theta_list,as.numeric(p_matrix),as.numeric(n_matrix))))
+}
+# running mcmc
+lebron_GSW_n<- c(25,23,22)
+player_id = 2544
+opp_team_id = 1610612744
 data = starting_dat
-inits=list(n = 24,
-           r = 20,
-           theta = 0.3)
-prop_sd = list(n = 0.1, r = 0.4)
-psi = 0.01
-player_id = 2544 # LeBron
-opp_team_id = 1610612744 #GSW
-n_iter = 100
+lebron_mean_n<- 18
+lebron_median_n<- 18
+lebron_max_n<- 27
+lebron_GSW_p<- c(0.560,0.652,0.636)
+lebron_GSW_y<- c(14,15,14)
+GSW_DRTG<- 115.1585
+mean_DRTG<- 114.2114
+gamma<-0.01
+factor_gsw<- exp(gamma*(GSW_DRTG-mean_DRTG))
+n_iter<- 10000
+init_r<- max(lebron_GSW_n) # maybe tune?
+init_theta<- mean(lebron_GSW_p) # maybe tune ?
+init_p<- mean(lebron_GSW_p) # maybe tune ?
+init_n<- round(mean(lebron_GSW_n)) #maybe tune ?
 
-### RESETTING COMMANDS END
 
-gibby = function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000, n_burnin = 1) {
-  # Gather true data
-  player_dat = data[data$PLAYER_ID == player_id, ]
-  player_dat = player_dat[player_dat$Opposing_Team_Name_ID == opp_team_id, ]
-  true_y = player_dat$FGM
-  true_n = player_dat$FGA
-  DRTG_var = data$centered_OPP_DRTG[1]
-  
-  # initial value setup
-  p = inits$p
-  n = inits$n
-  r = inits$r
-  theta = inits$theta
-  
-  # Save structure (REVIEW)
-  n_keep = numeric(n_iter)
-  p_keep = numeric(n_iter)
-  r_keep = numeric(n_iter)
-  theta_keep = numeric(n_iter)
-  
-  # Proposal variances (TODO)
-  prop_n_sd = prop_sd$n
-  prop_r_sd = prop_sd$r
-  
-  # Gibbs sampler main
-  for (i in 1:n_iter) {
-    # Generate p
-    pi = rbeta(1,5+sum(true_y), 5+sum(n - true_y))
-    p = min(1, pi * exp(psi * DRTG_var))
-    
-    # Generate n
-    prop_n = rnorm(1, mean=n, sd = prop_n_sd) # round to ensure its integer, using r as thats what Dr. Niemi did 
-    logn = log_n_func(n=prop_n, r, true_y, theta, p) - log_n_func(n=n, r, true_y, theta, p)
-    if (is.finite(logn) && log(runif(1)) < logn) {
-      n <- prop_n
-    }
-    
-    # generate r 
-    prop_r = rnorm(1, mean=r, sd = prop_r_sd) # round to ensure its integer, using r as thats what Dr. Niemi did 
-    logr = log_r_func(prop_r, n, true_y, theta, p) - log_r_func(r, n, true_y, theta, p)
-    if (is.finite(logr) && log(runif(1)) < logr) {
-      r <- prop_r
-    }
-    # generate theta
-    theta = rbeta(1, (sum(n)+ (1/2)), (r - 1))
-    
-    # Save values 
-    
-    n_keep[i] =n
-    p_keep[i] = p 
-    r_keep[i] = r
-    theta_keep[i] = theta
-  }
-  output = list(n = n_keep[n_burnin:n_iter], p = p_keep[n_burnin:n_iter],
-                r = r_keep[n_burnin:n_iter], theta = theta_keep[n_burnin:n_iter])
-  return(output)
-}
+MCMC_model_3 = suppressWarnings(mcmc_model_3(starting_dat, player_id = 2544, opp_team_id = 1610612744, gamma=0.01,
+                            n_iter=100000, init_r,init_theta,init_n,init_p))
+MCMC_model_3
 
 ```
+
 
 ```{r}
 
-# 2544 is Lebron's player id 
-# 1610612744 is GSw, Steph Curry's team
 
-true_dat = starting_dat[starting_dat$PLAYER_ID == 2544,]
-true_dat = true_dat[true_dat$Opposing_Team_Name_ID == 1610612744,]
+### Traceplots
 
-#function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000)
-inits=list(n = true_dat$FGA,
-           r = 20,
-           theta = 0.5)
-prop_sd = list(n = 100, r = 2)
-n_iter = 26000
-n_burnin = 1000
-output = suppressWarnings(gibby(starting_dat, inits, prop_sd = prop_sd,
-                                psi=0.01, player_id = 2544, opp_team_id = 1610612744,
-                                n_iter=n_iter, n_burnin = n_burnin))
-# Diagnostics
-plot(y=output$n, x = 1:length(output$n), type = 'l', main="Trace Plot of n")
-# plot(as.mcmc(output$n), main="n")
-abline(h = mean(output$n), col='red', lwd=2)
-abline(h = mean(true_dat$FGA), col='blue', lwd=2)
+# plots of the raw samples without removing burnin
+par(mfrow=c(3,3))
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="r")],type="l",main="r with burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="theta")],type="l",main="theta burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")],type="l",main="p burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")],type="l",main="p burnin",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")],type="l",main="p burnin",ylab="value")
+plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")]),type="l",main="n[1] burnin",ylab="value")
+plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")]),type="l",main="n[2] burnin",ylab="value")
+plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")]),type="l",main="n[3] burnin",ylab="value")
 
-plot(y=output$p, x = 1:length(output$n), type = 'l', main="Trace Plot of p")
-abline(h = mean(output$p), col='red', lwd=2)
-abline(h = mean(true_dat$FG_PCT), col='blue', lwd=2)
+#burnin removal (I know I probably made this more complicated than necessary)
+burnin<-10000
+r_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="r")][burnin:n_iter]
+theta_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="theta")][burnin:n_iter]
+p1_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")][burnin:n_iter]
+p2_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")][burnin:n_iter]
+p3_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")][burnin:n_iter]
+n1_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")][burnin:n_iter]
+n2_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")][burnin:n_iter]
+n3_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")][burnin:n_iter]
+iter_index<- burnin:n_iter
+parameter_index<- c("r","theta","p[1]","p[2]","p[3]","n[1]","n[2]","n[3]")
+MCMC_model_3_culled<- data.frame(iteration = rep(iter_index,length(parameter_index)),
+                                parameter = rep(parameter_index,each=(n_iter-burnin+1)),
+                                value = c(r_culled,theta_culled,p1_culled,p2_culled,p3_culled,n1_culled,n2_culled,n3_culled))
 
-plot(y=output$r, x = 1:length(output$n), type = 'l', main="Trace Plot of r")
-abline(h = mean(output$r), col='red', lwd=2)
-plot(y=output$theta, x = 1:length(output$n), type = 'l', main="Trace Plot of theta")
-abline(h = mean(output$theta), col='red', lwd=2)
+
+# plots of the samples with burnin removed
+par(mfrow=c(2,3))
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="r")],type="l",main="r culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="theta")],type="l",main="theta culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[1]")],type="l",main="p culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[2]")],type="l",main="p culled",ylab="value")
+plot(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p[3]")],type="l",main="p culled",ylab="value")
+plot(round(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="n[1]")]),type="l",main="n[1] culled",ylab="value")
+plot(round(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="n[2]")]),type="l",main="n[2] culled",ylab="value")
+plot(round(MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="n[3]")]),type="l",main="n[3] culled",ylab="value")
+
+
+### I don't think this is actually the Predictive Posterior
+# 
+# # getting the 10000 p's for sampling
+# posterior_mean_ps<- MCMC_model_3_culled$value[which(MCMC_model_3_culled$parameter=="p")]
+# # getting the 10000 n's for sampling
+# posterior_mean_ns<- round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
+# # making the y's using our posterior sample
+# y_model_3_v2<- rbinom(n_iter,posterior_mean_ns,posterior_mean_ps)
+# par(mfrow=c(1,2))
+# #hist of distribution based off our samples
+# hist(y_model_3_v2,xlim=c(0,20),main="using samples")
+# #compare to a hist of lebron's games against GSW using observed values
+# hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(lebron_GSW_p)),xlim=c(0,20), main="based off of lebron's 3 GSW games")
 ```
-
-
-OLD GIBBY
-```{r}
-gibby = function(data, inits, prop_sd, psi, player_id, opp_team_id, n_iter=5000, n_burnin = 1) {
-  # Gather true data
-  player_dat = data[data$PLAYER_ID == player_id, ]
-  player_dat = player_dat[player_dat$Opposing_Team_Name_ID == opp_team_id, ]
-  true_y = player_dat$FGM
-  true_n = player_dat$FGA
-  DRTG_var = data$centered_OPP_DRTG[1]
-  
-  # initial value setup
-  p = inits$p
-  n = inits$n
-  r = inits$r
-  theta = inits$theta
-  
-  # Save structure (REVIEW)
-  n_keep = numeric(n_iter)
-  p_keep = numeric(n_iter)
-  r_keep = numeric(n_iter)
-  theta_keep = numeric(n_iter)
-  
-  # Proposal variances (TODO)
-  prop_n_sd = prop_sd$n
-  prop_r_sd = prop_sd$r
-  
-  # Gibbs sampler main
-  for (i in 1:n_iter) {
-    # Generate p
-    pi = rbeta(1,5+sum(true_y), 5+sum(n - true_y))
-    p = min(1, pi * exp(psi * DRTG_var))
-    
-    # Generate n
-    prop_n = round(rnorm(1, mean=n, sd = prop_n_sd)) # round to ensure its integer, using r as thats what Dr. Niemi did 
-    logn = log_n_func(n=prop_n, r, true_y, theta, p) - log_n_func(n=n, r, true_y, theta, p)
-    if (is.finite(logn) && log(runif(1)) < logn) {
-      n <- prop_n
-    }
-    
-    # generate r 
-    prop_r = round(rnorm(1, mean=r, sd = prop_r_sd)) # round to ensure its integer, using r as thats what Dr. Niemi did 
-    logr = log_r_func(prop_r, n, true_y, theta, p) - log_r_func(r, n, true_y, theta, p)
-    if (is.finite(logr) && log(runif(1)) < logr) {
-      r <- prop_r
-    }
-    # generate theta
-    theta = rbeta(1, (sum(n)+ (1/2)), (r - 1))
-    
-    # Save values 
-    
-    n_keep[i] =n
-    p_keep[i] = p 
-    r_keep[i] = r
-    theta_keep[i] = theta
-  }
-  output = list(n = n_keep[n_burnin:n_iter], p = p_keep[n_burnin:n_iter],
-                r = r_keep[n_burnin:n_iter], theta = theta_keep[n_burnin:n_iter])
-  return(output)
-}
-
-inits=list(p = 0.7,
-           n = 25,
-           r = 25,
-           theta = 0.5)
-prop_sd = list(n = 0.5, r = 2)
-n_iter = 11000
-n_burnin = 1000
-output = suppressWarnings(gibby(starting_dat, inits, prop_sd = prop_sd,
-                                psi=0.1, player_id = 2544, opp_team_id = 1610612746,
-                                n_iter=n_iter, n_burnin = n_burnin))
-
-# Diagnostics
-plot(y=output$n, x = 1:length(output$n), type = 'l', main="Trace Plot of n")
-# plot(as.mcmc(output$n), main="n")
-abline(h = mean(output$n), col='red', lwd=2)
-abline(h = mean(true_dat$FGA), col='blue', lwd=2)
-
-plot(y=output$p, x = 1:length(output$n), type = 'l', main="Trace Plot of p")
-abline(h = mean(output$p), col='red', lwd=2)
-abline(h = mean(true_dat$FG_PCT), col='blue', lwd=2)
-
-plot(y=output$r, x = 1:length(output$n), type = 'l', main="Trace Plot of r")
-abline(h = mean(output$r), col='red', lwd=2)
-plot(y=output$theta, x = 1:length(output$n), type = 'l', main="Trace Plot of theta")
-abline(h = mean(output$theta), col='red', lwd=2)
-```
-
 
