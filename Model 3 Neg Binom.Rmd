@@ -99,6 +99,26 @@ p(\theta_i) &\varpropto p(n_ijk|r_i, \theta_i)p(r_i, \theta_i)\\
   \end{aligned}
 $$
 
+Bayes factor stuff (marginal likelihood)
+$$
+p(y \mid M_3) =
+\frac{\Gamma(a_i) \Gamma(b_i)}{\Gamma(a_i + b_i)}
+\sum_{n_i} \prod_j \binom{n_i}{y_{ijk}} 
+\times
+\frac{
+\Gamma\left( \sum_j y_{ijk} + a_i - 1 \right)
+\Gamma\left( \sum_j (n_i - y_{ijk}) + b_i - 1 \right)
+}{
+\Gamma\left( \sum_j n_i + a_i + b_i - 2 \right)
+} \\
+\times \frac{\sqrt{\pi 2^{1 - n_{ijk}}}}{5}
+\left(
+\frac{3 - 2 n_{ijk} \Gamma(n_{ijk} + 1)}{\Gamma(n_{ijk} - 1/2)}
++ \frac{4(n_{ijk} - 3) \Gamma(2 n_{ijk} + 1)}{\Gamma(2 n_{ijk} - 1/2)}
+\right)\\
+\hat{\Pi}_{M_1} = P(y|M_1)/\sum_{M^*\in M}P(y|M^*) \overset{\text{R approximate}}{\rightarrow} 0.2713688e-09
+$$
+
 So for this, we kinda have a full thingy set up?
 
 ```{r}

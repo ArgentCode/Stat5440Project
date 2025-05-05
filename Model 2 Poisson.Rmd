@@ -105,6 +105,21 @@ $$
   &\sim \text{Gamma}\left(\text{shape} = \sum_j n_{ijk} - \tfrac{1}{2}, \ \text{rate} = J_k\right)\\
 \end{aligned}
 $$
+
+Bayes factor stuff
+$$
+p(y \mid M_2) =
+\frac{\Gamma(a_i)\Gamma(b_i)}{\Gamma(a_i + b_i)} 
+\sum_{n_i} \prod_j \binom{n_i}{y_{ijk}} 
+\cdot \left( \frac{1}{n_{ijk}!} \Gamma(n_{ijk} + 1/2) \right)
+\cdot \frac{
+\Gamma\left( \sum_j y_{ijk} + a_i - 1 \right)
+\Gamma\left( \sum_j (n_i - y_{ijk}) + b_i - 1 \right)
+}{
+\Gamma\left( \sum_j n_i + a_i + b_i - 2 \right)
+}\\
+\hat{\Pi}_{M_2} = P(y|M_2)/\sum_{M^*\in M}P(y|M^*) \overset{\text{R approximate}}{\rightarrow} 0.00867307
+$$
 # Model 2 implementation
 
 ```{r, warning=FALSE}

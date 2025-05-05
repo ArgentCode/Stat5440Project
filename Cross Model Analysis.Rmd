@@ -144,7 +144,9 @@ model_1 <- MH_beta_grid_search(current = 0.5,
 
 #Decided on using max for n
 p_samples = model_1$samples
-model_1_samps = rbinom(n_iter-burnin, max(N_vec), p_samples[burnin:n_iter])
+model_1_mean_samps = rbinom(n_iter-burnin, round(mean(N_vec)), p_samples[burnin:n_iter])
+model_1_median_samps = rbinom(n_iter-burnin, median(N_vec), p_samples[burnin:n_iter])
+model_1_max_samps = rbinom(n_iter-burnin, max(N_vec), p_samples[burnin:n_iter])
 ```
 
 
@@ -350,13 +352,71 @@ posterior_mean_ns <- round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mea
 model_3_samps <- rbinom(n_iter-burnin,posterior_mean_ns,posterior_mean_ps)
 ```
 
+# Bayes factor stuff
+
+Ethans BDA
+
+```{r}
+
+lebron_GSW_n <- player_dat$FGA
+n<-lebron_GSW_n    # you would use a different player's previously observed n's here
+third<- prod((sqrt(pi)*(2^(1-n))/5)*(((3-2*n)*gamma(n+1)/gamma(n-0.5))+(4*(n-3)*gamma((2*n)+1)/gamma((2*n)-0.5))))
+second<-(prod(gamma(lebron_GSW_n+1/2)/factorial(lebron_GSW_n)))
+sumDenominatorThing<- 1 + second + third
+BFmodel_1<- 1/sumDenominatorThing
+BFmodel_2<- second/sumDenominatorThing
+BFmodel_3<- third
+BFmodel_1
+BFmodel_2
+BFmodel_3
+###  NOTES FOR CRAIG/BEN
+# y_model_1_mean    is the predictive posterior y's for model 1 using n = mean(lebron)
+# y_model_1_median  is the predictive posterior y's for model 1 using n = median(lebron)
+# y_model_1_max     is the predictive posterior y's for model 1 using n = max(lebron)
+# y_model_2         is the predictive posterior y's for model 2
+# y_model_3         is the predictive posterior y's for model 3
+###
+
+y_model_1_mean = model_1_mean_samps
+y_model_1_median = model_1_median_samps
+y_model_1_max = model_1_max_samps
+y_model_2 = model_2_samps
+y_model_3 = model_3_samps
+
+model_averaged_with_model_1_max<- round((BFmodel_1*y_model_1_max)+(BFmodel_2*y_model_2)+(BFmodel_3*y_model_3))
+model_averaged_with_model_1_mean<- round((BFmodel_1*y_model_1_mean)+(BFmodel_2*y_model_2)+(BFmodel_3*y_model_3))
+model_averaged_with_model_1_median<- round((BFmodel_1*y_model_1_median)+(BFmodel_2*y_model_2)+(BFmodel_3*y_model_3))
+
+
+### this is the graph with all models + lebron's "true", probably use your ggplot thing craig
+par(mfrow=c(1,1))
+# model 1 was mean:
+hist(model_averaged_with_model_1_mean,col=rgb(0,0,1,1/4),xlim=c(0,30),main="model comparison, M1=means",xlab="M1:blue, M2:green, M3:red, lebronPast:yellow")
+hist(y_model_2,col=rgb(0,1,0,1/4), add=T)
+hist(y_model_3,col=rgb(1,0,0,1/4), add=T)
+hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(player_dat$FG_PCT)),col=rgb(1,1,0,1/4),add=T)
+
+# model 1 was median:
+hist(model_averaged_with_model_1_median,col=rgb(0,0,1,1/4),xlim=c(0,30),main="model comparison, M1=means",xlab="M1:blue, M2:green, M3:red, lebronPast:yellow")
+hist(y_model_2,col=rgb(0,1,0,1/4), add=T)
+hist(y_model_3,col=rgb(1,0,0,1/4), add=T)
+hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(player_dat$FG_PCT)),col=rgb(1,1,0,1/4),add=T)
+
+# model 1 was max:
+hist(model_averaged_with_model_1_max,col=rgb(0,0,1,1/4),xlim=c(0,30),main="model comparison, M1=means",xlab="M1:blue, M2:green, M3:red, lebronPast:yellow")
+hist(y_model_2,col=rgb(0,1,0,1/4), add=T)
+hist(y_model_3,col=rgb(1,0,0,1/4), add=T)
+hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(player_dat$FG_PCT)),col=rgb(1,1,0,1/4),add=T)
+```
 
 # Creating our cool chart
 
 ```{r}
 true_samps = rbinom(n_iter-burnin,round(mean(player_dat$FGA)),mean(player_dat$FG_PCT))
-df = data.frame(fixed = model_1_samps,
-                true = true_samps)
+df = data.frame(Mean = model_1_mean_samps,
+                Poisson = model_2_samps,
+                NegBinom = model_3_samps,
+                True = true_samps)
 
 df_long <- df |>
   pivot_longer(
@@ -374,8 +434,24 @@ df_long |>
     y = "Count",
     fill = "Group"
   ) +
-  geom_vline(xintercept = mean(model_1_samps), color = "red", linetype = "dotted", size = 1) +
-  geom_vline(xintercept = mean(true_samps), color = "blue", linetype = "dotted", size = 1) +
+  xlim(5,25) +
+  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
   theme_minimal()
 ```
+
+```{r}
+df = data.frame(model = c("Fixed", "Poisson", "Negative Binomial"), BF = c(0.9913269, 0.00867307, "< 0.00001"))
+kable(df)
+```
+
+
+
+
+```{r}
+
+```
+
+
 

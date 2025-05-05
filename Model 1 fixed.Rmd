@@ -90,6 +90,21 @@ $$
 \end{aligned}
 $$
 
+Bayes factor stuff
+$$
+p(y \mid M_1) =
+\frac{\Gamma(a_i) \Gamma(b_i)}{\Gamma(a_i + b_i)} 
+\sum_{n_i} \prod_j \binom{n_i}{y_{ijk}} 
+\cdot
+\frac{
+\Gamma\left( \sum_j y_{ijk} + a_i - 1 \right) 
+\Gamma\left( \sum_j (n_i - y_{ijk}) + b_i - 1 \right)
+}{
+\Gamma\left( \sum_j n_i + a_i + b_i - 2 \right)
+}\\
+\hat{\Pi}_{M_1} = P(y|M_1)/\sum_{M^*\in M}P(y|M^*) \overset{\text{R approximate}}{\rightarrow} 0.9913269
+$$
+
 ## Metropolis Hastings Implementation to Obtain p_i
 
 ```{r}
