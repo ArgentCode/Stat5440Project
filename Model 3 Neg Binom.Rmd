@@ -86,8 +86,8 @@ Next we write out the full conditionals
 $$
 \begin{aligned}
   y_{ikj}|... &\sim Bin(n_{ikj},p_{ik})\\
-  p_{ik}|... &\varpropto \phi p(y|p_{ik},n_{ikj})p(p_{ik}|a,b)\\
-  &\varpropto \min(1, Beta(\sum(y)+5,N-\sum(y)+5\\
+  p_{ik}|... &\varpropto \phi p(y|p_{ik},n_{ikj})p(p_{ik}|\alpha,\beta)\\
+  &\varpropto \min(1, Beta(\sum(y)+\alpha,N-\sum(y)+\beta\\
   n_{ikj}|... &\varpropto p(y_{ikj}|p_{ik},n_{ikj})p(n_{ikj}|r,\theta)\\
   &\varpropto \ln\left( \prod_{j,k} (n_{ijk} + r_i - 1)! \right) 
 - \ln\left( \prod_{j,k} (n_{ijk} - y_{ijk})! \right) 
@@ -213,7 +213,7 @@ init_n<- round(mean(lebron_GSW_n)) #maybe tune ?
 MCMC_model_3 = suppressWarnings(mcmc_model_3(starting_dat, player_id = 2544, opp_team_id = 1610612744, gamma=0.01,
                             n_iter=n_iter, init_r,init_theta,init_n,init_p,
                             prop_r_sd=3.7, prop_n_sd = 3.7))
-MCMC_model_3
+# MCMC_model_3
 
 ```
 

@@ -69,6 +69,42 @@ starting_dat <- starting_dat |>
   mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
 ```
 
+Model 2 full conditionals
+
+$$
+\begin{aligned}
+  p(p_{ik} \mid \ldots) &\propto p(y_{ijk} \mid p_{ik}, n_i) \, p(p_{ik}) \\
+  &\propto \left[ \prod_j p(y_{ijk} \mid p_{ik}, n_i) \right] \left[ \prod_j p(p_{ik}) \right] \\
+  &\propto \prod_j \binom{n_i}{y_{ijk}} p_{ik}^{y_{ijk}} (1 - p_{ik})^{n_i - y_{ijk}} \prod_j \frac{\Gamma(5)\Gamma(5)}{\Gamma(10)} p_{ik}^{\alpha-1} (1 - p_{ik})^{\beta-1} \\
+  &\propto \prod_j \left( \binom{n_i}{y_{ijk}} \right) p_{ik}^{\alpha + \sum_j y_{ijk} - 1} (1 - p_{ik})^{\beta + \sum_j(n_i - y_{ijk}) - 1} \\
+  &\propto \text{Beta} \left( \alpha + \sum_j y_{ijk}, \, \beta + \sum_j(n_i - y_{ijk}) \right)\\
+  p(n_{ijk} \mid \ldots) &\propto p(y_{ijk} \mid p_{ik}, n_{ijk}) \, p(n_{ijk} \mid \lambda_i) \\
+  &\propto \left[ \prod_j p(y_{ijk} \mid p_{ik}, n_{ijk}) \right] \left[ \prod_j p(n_{ijk} \mid \lambda_i) \right] \\
+  &\propto \prod_j \binom{n_{ijk}}{y_{ijk}} p_{ik}^{y_{ijk}} (1 - p_{ik})^{n_{ijk} - y_{ijk}} \cdot \frac{\lambda_i^{n_{ijk}} e^{-\lambda_i}}{n_{ijk}!} \\
+  &\propto \prod_j \left( p_{ik}^{y_{ijk}} (1 - p_{ik})^{- y_{ijk}} e^{-\lambda_i} \cdot \frac{n_{ijk}!}{y_{ijk}! (n_{ijk} - y_{ijk})!} \cdot \frac{(1-p_{ik})\lambda_i)^{n_{ijk}}}{n_{ijk}!} \right) \\
+  &\propto \prod_j \frac{((1-p_{ik})\lambda_i)^n_{ijk}}{(n_{ijk}-y_{ijk})!} \\
+  &\propto  \frac{((1-p_{ik})\lambda_i)^{\sum_jn_{ijk}}}{(n_{ijk}-y_{ijk})!} \\
+  p(\lambda_i \mid \ldots) &\propto p(y_{ijk} \mid p_{ik}, n_{ijk}) \, p(n_{ijk} \mid \lambda_i) \, p(\lambda_i) \\
+  &\propto p(n_{ijk} \mid \lambda_i) \, p(\lambda_i) \\
+  &\propto \prod_j \frac{\lambda_i^{n_{ijk}} e^{-\lambda_i}}{n_{ijk}!} \cdot \lambda_i^{-1/2} \\
+  &\propto \left( \prod_j \frac{1}{n_{ijk}!} \right) \lambda_i^{\sum_j n_{ijk} - 1/2} e^{-\sum_j \lambda_i} \\
+  &\propto \lambda_i^{\sum_j n_{ijk} - 1/2} e^{-\sum_j \lambda_i} \\
+  &\sim \text{Gamma}\left(\text{shape} = \sum_j n_{ijk} - \tfrac{1}{2}, \ \text{rate} = J_k\right)
+\end{aligned}
+$$
+
+Shortened
+
+$$
+\begin{aligned}
+  p(p_{ik} \mid \ldots) &\propto p(y_{ijk} \mid p_{ik}, n_i) \, p(p_{ik}) \\
+  &\propto \text{Beta} \left( \alpha + \sum_j y_{ijk}, \, \beta + \sum_j(n_i - y_{ijk}) \right)\\
+  p(n_{ijk} \mid \ldots) &\propto p(y_{ijk} \mid p_{ik}, n_{ijk}) \, p(n_{ijk} \mid \lambda_i) \\
+  &\propto  \frac{((1-p_{ik})\lambda_i)^{\sum_jn_{ijk}}}{(n_{ijk}-y_{ijk})!} \\
+  p(\lambda_i \mid \ldots) &\propto p(y_{ijk} \mid p_{ik}, n_{ijk}) \, p(n_{ijk} \mid \lambda_i) \, p(\lambda_i) \\
+  &\sim \text{Gamma}\left(\text{shape} = \sum_j n_{ijk} - \tfrac{1}{2}, \ \text{rate} = J_k\right)\\
+\end{aligned}
+$$
 # Model 2 implementation
 
 ```{r, warning=FALSE}
@@ -152,7 +188,6 @@ MCMC_model_2 = mcmc_model_2(data = starting_dat,
 # Model Diagnostics
 
 ```{r}
-
 player_dat = starting_dat[starting_dat$PLAYER_ID == 2544, ]
 player_dat = player_dat[player_dat$OPP_TEAM_ID == 1610612744, ]
 

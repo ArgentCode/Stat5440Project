@@ -354,11 +354,9 @@ model_3_samps <- rbinom(n_iter-burnin,posterior_mean_ns,posterior_mean_ps)
 # Creating our cool chart
 
 ```{r}
+true_samps = rbinom(n_iter-burnin,round(mean(player_dat$FGA)),mean(player_dat$FG_PCT))
 df = data.frame(fixed = model_1_samps,
-                poisson = model_2_samps,
-                negbinom = model_3_samps,
-                average = round(apply(data.frame(model_1_samps, model_2_samps, model_3_samps),1, mean)),
-                trueish = rbinom(n_iter-burnin,round(mean(player_dat$FGA)),mean(player_dat$FG_PCT)))
+                true = true_samps)
 
 df_long <- df |>
   pivot_longer(
@@ -376,6 +374,8 @@ df_long |>
     y = "Count",
     fill = "Group"
   ) +
+  geom_vline(xintercept = mean(model_1_samps), color = "red", linetype = "dotted", size = 1) +
+  geom_vline(xintercept = mean(true_samps), color = "blue", linetype = "dotted", size = 1) +
   theme_minimal()
 ```
 

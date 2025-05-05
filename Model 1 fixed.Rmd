@@ -81,6 +81,15 @@ $$
 \end{aligned}
 $$
 
+Model 1 conditionals
+$$
+\begin{aligned}
+  P(p_i|...) &\varpropto P(y_{ijk}|p_{ik}, n_{i})P(p_{ik})\\
+  &\varpropto Beta(a + \sum_Jy_{ijk}, b+\sum_J(n_i - y_{ijk}))\\
+  &\text{J is all games against chosen team}
+\end{aligned}
+$$
+
 ## Metropolis Hastings Implementation to Obtain p_i
 
 ```{r}
@@ -213,26 +222,27 @@ fgm_sim_mean <- rbinom(length(p_ik_gsw), size = n_mean, prob = p_ik_gsw)
 fgm_sim_median <- rbinom(length(p_ik_gsw), size = n_median, prob = p_ik_gsw)
 fgm_sim_max <- rbinom(length(p_ik_gsw), size = n_max, prob = p_ik_gsw)
 
+par(mfrow=c(2,2))
 # Plot 1: Mean FGA
 hist(fgm_sim_mean,
      main = paste("Simulated FGM vs GSW (n_i = mean =", n_mean, ")"),
      xlab = "Field Goals Made",
      col = "skyblue", breaks = 15)
-abline(v = mean(fgm_sim_mean), col = "red", lwd = 2)
+# abline(v = mean(fgm_sim_mean), col = "red", lwd = 2)
 
 # Plot 2: Median FGA
 hist(fgm_sim_median,
      main = paste("Simulated FGM vs GSW (n_i = median =", n_median, ")"),
      xlab = "Field Goals Made",
      col = "orange", breaks = 15)
-abline(v = mean(fgm_sim_median), col = "red", lwd = 2)
+# abline(v = mean(fgm_sim_median), col = "red", lwd = 2)
 
 # Plot 3: Max FGA
 hist(fgm_sim_max,
      main = paste("Simulated FGM vs GSW (n_i = max =", n_max, ")"),
      xlab = "Field Goals Made",
      col = "lightgreen", breaks = 15)
-abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
+# abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
 ```
 
 Predictive posterior

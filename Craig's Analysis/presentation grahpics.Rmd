@@ -1,0 +1,130 @@
+---
+title: "presentation grahpics"
+output: html_document
+---
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(coda)
+```
+
+# Data Prep and Cleaning
+
+```{r, warning = FALSE}
+# Load and clean data
+original_tbl <- read.csv("../NBA-BoxScores-2023-2024.csv") |>
+  mutate(
+    START_POSITION = na_if(START_POSITION, "") |> factor(),
+    COMMENT = na_if(COMMENT, "") |> factor(),
+    MIN = na_if(MIN, ""),
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
+  )
+
+# Filter to starters only
+starting_dat <- original_tbl |>
+  filter(!is.na(START_POSITION))
+
+# Calculate team points per game
+team_points <- original_tbl |>
+  filter(!is.na(PTS)) |>
+  group_by(GAME_ID, TEAM_ID) |>
+  summarize(TeamPoints = sum(PTS), .groups = "drop")
+
+# Join with itself to get opponent points
+team_vs_opponent <- team_points |>
+  inner_join(team_points, by = "GAME_ID", suffix = c("", ".opp")) |>
+  filter(TEAM_ID != TEAM_ID.opp) |>
+  rename(OPP_TEAM_ID = TEAM_ID.opp, OpponentPoints = TeamPoints.opp)
+
+# Compute average opponent points allowed per team (DRTG)
+team_drtg <- team_vs_opponent |>
+  group_by(TEAM_ID) |>
+  summarize(DRTG_proxy = mean(OpponentPoints), n_games = n(), .groups = "drop")
+
+# Build opponent_map from distinct team-game pairs
+game_team_pairs <- original_tbl |>
+  select(GAME_ID, TEAM_ID) |>
+  distinct()
+
+# Create mapping of TEAM_ID and OPP_TEAM_ID for each game
+opponent_map <- game_team_pairs |>
+  inner_join(game_team_pairs, by = "GAME_ID") |>
+  filter(TEAM_ID.x != TEAM_ID.y) |>
+  rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y)
+
+# Join with defensive ratings (DRTG)
+opponent_map <- opponent_map |>
+  left_join(team_drtg |> rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy), by = "OPP_TEAM_ID")
+
+
+# Merge opponent info into starting dataset and center DRTG
+mean_drtg <- mean(team_drtg$DRTG_proxy)
+
+starting_dat <- starting_dat |>
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID")) |>
+  mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
+```
+
+Graph of LeBrons' FGM by opp team
+
+```{r}
+lebron_dat = starting_dat[starting_dat$PLAYER_ID == 2544,]
+player_avg_fgm <- lebron_dat |>
+  group_by(OPP_TEAM_ID) |>
+  summarise(
+    avg_fgm = mean(FGM, na.rm = TRUE),
+    avg_fga = mean(FGA, na.rm = TRUE),
+    avg_fg_pct = mean(FG_PCT, na.rm = TRUE),
+    .groups = "drop"
+  )
+hist(player_avg_fgm$avg_fgm, main="LeBron's Average FGM by Opposing team", xlab = "Average FGM")
+hist(player_avg_fgm$avg_fga, main="LeBron's Average FGA by Opposing team", xlab = "Average FGA")
+hist(player_avg_fgm$avg_fg_pct, main="LeBron's Average FG_PCT by Opposing team", xlab = "Average FG_PCT")
+```
+
+Some latex
+$$
+\begin{aligned}
+  p_{ik} &\sim \phi*p_i\\
+  \phi &= \text{defensive metrics}\\
+  p_i &\sim beta(a,b)
+\end{aligned}
+$$
+
+
+
+
+Chart for the models
+
+$$
+\begin{array}{|c|c|c|}
+\hline
+\textbf{Model 1} & \textbf{Model 2} & \textbf{Model 3} \\
+\hline
+\begin{array}{l}
+n_{ijk} = \text{Fixed} \\
+\text{(Mean, Median, or Max)} 
+\end{array} & 
+n_{ijk} \sim \text{Poisson}(\lambda) & 
+\begin{array}{l}
+n_{ijk} \sim \text{Neg Binom}(r, \theta) \\
+p(r, \theta) \propto \sqrt{\frac{r_i}{\theta^2}(1 - \theta_i)} \quad \text{(Jeffreys prior)}
+\end{array} \\
+\hline
+\text{Using base statistics} &
+
+\begin{array}{l}
+\text{Natural as data is discrete} \\
+\text{mean } \neq \text{variance}
+\end{array} &
+\begin{array}{l}
+\text{Relaxes to mean } \leq \text{variance} \\
+\text{But sometimes mean } > \text{variance}
+\end{array} \\
+\hline
+\end{array}
+$$

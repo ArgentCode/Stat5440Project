@@ -160,7 +160,7 @@ ggplot(df_lines, aes(x = FGA, y = Opposing_Team_Name, group = Opposing_Team_Name
   geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
   geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
   geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1))
 
 # And now for Steph
 steph_dat = starting_dat[starting_dat$PLAYER_ID == 201939, ] # lebron 2544 and steph curry 201939
@@ -186,7 +186,7 @@ ggplot(df_lines, aes(x = FGA, y = Opposing_Team_Name, group = Opposing_Team_Name
   geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
   geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
   geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)+
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1))
 ```
 
 ```{r}
@@ -244,7 +244,8 @@ ggplot(df_lines, aes(x = FGM, y = Opposing_Team_Name, group = Opposing_Team_Name
   ) +
   geom_hline(yintercept = mean_fga, color = "red", linetype = "solid", size = 0.5) +
   geom_hline(yintercept = mean_fga - sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
-  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5)
+  geom_hline(yintercept = mean_fga + sd_fga, color = "blue", linetype = "dotted", size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1))
 ```
 
 

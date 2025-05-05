@@ -1,0 +1,703 @@
+---
+title: ""
+author: ""
+date: ""
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    toc_depth: 3
+  html_document:
+    toc: true
+    number_sections: true
+    toc_depth: 3
+---
+
+\begin{titlepage}
+\centering
+\vspace*{3cm}
+
+{\Huge \textbf{Predicting NBA Player Performance Using Bayesian Models}}\\[1.5cm]
+
+{\Large Ben Moolman, Craig Orman, Ethan Pross}\\[0.5cm]
+
+{\large STAT 5440: Bayesian Statistics}\\[0.5cm]
+
+{\large Iowa State University}\\[0.5cm]
+
+{\large May 2025}
+
+\vfill
+
+\end{titlepage}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning = FALSE, echo = FALSE, message = FALSE}
+library(dplyr)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(coda)
+
+# Data Cleaning and Prep
+original_tbl <- read.csv("~/Desktop/Iowa State/Iowa State Classes/Spring 2025/STAT5400_Bayes/STAT5400_Bayesian/Project/NBA-BoxScores-2023-2024.csv") |> 
+  mutate(
+    START_POSITION = na_if(START_POSITION, "") |> factor(),
+    COMMENT = na_if(COMMENT, "") |> factor(),
+    MIN = na_if(MIN, ""),
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
+  )
+
+starting_dat <- original_tbl |> filter(!is.na(START_POSITION))
+
+team_points <- original_tbl |> 
+  filter(!is.na(PTS)) |> 
+  group_by(GAME_ID, TEAM_ID) |> 
+  summarize(TeamPoints = sum(PTS), .groups = "drop")
+
+team_vs_opponent <- team_points |> 
+  inner_join(team_points, by = "GAME_ID", suffix = c("", ".opp")) |> 
+  filter(TEAM_ID != TEAM_ID.opp) |> 
+  rename(OPP_TEAM_ID = TEAM_ID.opp, OpponentPoints = TeamPoints.opp)
+
+drtg <- team_vs_opponent |> 
+  group_by(TEAM_ID) |> 
+  summarize(DRTG_proxy = mean(OpponentPoints), .groups = "drop")
+
+game_team_pairs <- original_tbl |> select(GAME_ID, TEAM_ID) |> distinct()
+
+opponent_map <- game_team_pairs |> 
+  inner_join(game_team_pairs, by = "GAME_ID") |> 
+  filter(TEAM_ID.x != TEAM_ID.y) |> 
+  rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y) |> 
+  left_join(drtg |> rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy), by = "OPP_TEAM_ID")
+
+mean_drtg <- mean(drtg$DRTG_proxy)
+
+starting_dat <- starting_dat |> 
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID")) |> 
+  mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
+
+lebron_dat <- starting_dat |> filter(PLAYER_ID == 2544)
+
+# LeBron alpha and beta calculation for Beta prior (all models)
+# Empirical FG%
+fg_pct <- lebron_dat$FGM / lebron_dat$FGA
+mean_fg <- mean(fg_pct, na.rm = TRUE)
+var_fg <- var(fg_pct, na.rm = TRUE)
+
+# Method of moments estimation for Beta(a,b)
+alpha_est <- mean_fg * ((mean_fg * (1 - mean_fg) / var_fg) - 1)
+beta_est  <- (1 - mean_fg) * ((mean_fg * (1 - mean_fg) / var_fg) - 1)
+
+# MODEL 1
+log_q = function(theta, y, n) {
+  if (theta < 0 || theta > 1) return(-Inf)
+  sum(dbinom(y, size = n, prob = theta, log = TRUE)) + dbeta(theta, alpha_est, beta_est, log = TRUE)
+}
+
+MH_beta_binom = function(current, prop_sd, n_vec, y_vec, n_iter = 1000) {
+  samps = numeric(n_iter)
+  for (i in 1:n_iter) {
+    proposed = rnorm(1, current, prop_sd)
+    logr = log_q(proposed, y_vec, n_vec) - log_q(current, y_vec, n_vec)
+    if (log(runif(1)) < logr) current = proposed
+    samps[i] = current
+  }
+  return(samps)
+}
+
+set.seed(5440)
+Y <- lebron_dat$FGM
+N_vec <- lebron_dat$FGA
+
+chains <- lapply(c(0.3, 0.5, 0.7), function(init) MH_beta_binom(init, 0.05, N_vec, Y, n_iter = 1000))
+
+p_samples <- unlist(chains)  # Combine chains
+
+drtg_vec <- lebron_dat |> 
+  group_by(OPP_TEAM_ID) |> 
+  summarize(centered_OPP_DRTG = first(centered_OPP_DRTG), .groups = "drop") |> 
+  arrange(OPP_TEAM_ID) |> 
+  pull(centered_OPP_DRTG)
+
+gamma_val <- 0.01
+p_ik_matrix <- outer(p_samples, drtg_vec, function(p, drtg) p * exp(gamma_val * drtg)) |> pmin(1)
+
+p_ik_mean <- colMeans(p_ik_matrix)
+p_ik_CI <- apply(p_ik_matrix, 2, quantile, probs = c(0.025, 0.975))
+
+p_ik_summary <- data.frame(
+  OPP_TEAM_ID = sort(unique(lebron_dat$OPP_TEAM_ID)),
+  p_ik_mean = p_ik_mean,
+  p_ik_lower = p_ik_CI[1,],
+  p_ik_upper = p_ik_CI[2,]
+)
+
+drtg_gsw <- p_ik_summary |> filter(OPP_TEAM_ID == 1610612744) |> pull(p_ik_mean)
+p_ik_gsw <- p_samples * exp(gamma_val * (drtg_gsw - mean(drtg_vec))) |> pmin(1)
+
+n_mean <- round(mean(lebron_dat$FGA, na.rm = TRUE))
+n_median <- round(median(lebron_dat$FGA, na.rm = TRUE))
+n_max <- max(lebron_dat$FGA, na.rm = TRUE)
+
+set.seed(5440)
+fgm_sim_mean <- rbinom(length(p_ik_gsw), size = n_mean, prob = p_ik_gsw)
+fgm_sim_median <- rbinom(length(p_ik_gsw), size = n_median, prob = p_ik_gsw)
+fgm_sim_max <- rbinom(length(p_ik_gsw), size = n_max, prob = p_ik_gsw)
+```
+
+```{r, warning = FALSE, echo = FALSE, results = "hide", message = FALSE, eval = FALSE}
+# All code that can be run later on with echo set to FALSE to have graphs just rendered within the document
+
+# MODEL 1
+
+# Traceplots
+par(mfrow = c(3, 2), mar = c(4, 4, 2, 1))
+for (i in 1:3) {
+  chain <- chains[[i]]
+  plot(chain, type = "l", main = paste("Traceplot: Chain", i), ylab = "p", xlab = "Iteration")
+  acf(chain, main = paste("ACF: Chain", i), lag.max = 40)
+}
+
+# Running Means
+par(mfrow = c(1, 1))
+plot(cumsum(chains[[1]]) / seq_along(chains[[1]]), type = "l", col = "blue", ylim = c(0.4, 0.7), ylab = "Running Mean", xlab = "Iteration")
+lines(cumsum(chains[[2]]) / seq_along(chains[[2]]), col = "red")
+lines(cumsum(chains[[3]]) / seq_along(chains[[3]]), col = "green")
+legend("bottomright", legend = c("Chain 1", "Chain 2", "Chain 3"), col = c("blue", "red", "green"), lty = 1)
+
+# ESS Values
+ess_values <- sapply(chains, effectiveSize)
+print(ess_values)
+
+# LeBron Estimated FG% by Opponent Team using n_mean
+ggplot(p_ik_summary, aes(x = reorder(as.factor(OPP_TEAM_ID), -p_ik_mean), y = p_ik_mean)) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_errorbar(aes(ymin = p_ik_lower, ymax = p_ik_upper), width = 0.2, color = "steelblue") +
+  labs(title = "LeBron's Estimated FG% by Opponent Team", x = "Opponent Team ID", y = "Posterior Mean FG%") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), plot.title = element_text(hjust = 0.5))
+
+# Posterior Predictive for GSW
+hist(fgm_sim_mean, main = paste("Simulated FGM vs GSW (n =", n_mean, ")"), xlab = "FGM", col = "skyblue", breaks = 15)
+abline(v = mean(fgm_sim_mean), col = "red", lwd = 2)
+
+hist(fgm_sim_median, main = paste("Simulated FGM vs GSW (n =", n_median, ")"), xlab = "FGM", col = "orange", breaks = 15)
+abline(v = mean(fgm_sim_median), col = "red", lwd = 2)
+
+hist(fgm_sim_max, main = paste("Simulated FGM vs GSW (n =", n_max, ")"), xlab = "FGM", col = "lightgreen", breaks = 15)
+abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
+
+# MODEL 2
+
+
+
+# MODEL 3
+
+```
+
+
+# 1 Introduction
+
+In the National Basketball Association (NBA), player performance is influenced by a wide array of factors, including fatigue, game context, opposing team defense, and individual variance. While traditional sports analytics approaches often rely on point estimates or historical averages, these methods may fail to capture the uncertainty and game-to-game variability inherent in athletic performance.
+
+In this project, we aim to study and predict field goals made (FGM) by NBA starters across games from the 2023-2024 regular season. Our interest centers on understanding how much of a player’s scoring can be attributed to their own underlying shooting ability versus the strength of the defense they face. By using publicly available game-level box score data, we analyze how the performance of a given player fluctuates depending on the matchup.
+
+We restrict our attention to “starters”—players who were in the starting lineup for at least one game during the season. Starters are commonly the best players on their team at their respective positions. This filtering ensures that we focus on players with meaningful court time, thereby providing more stable statistics and reducing the noise associated with bench players who may have fewer opportunities or inconsistent usage.
+
+We use a publicly available dataset from Kaggle, titled *NBA Boxscore - Season 2023 / 2024*\footnote{\url{https://www.kaggle.com/datasets/albi9702/nba-boxscore-season-2023-2024?resource=download}}, which contains box score statistics for every player-game combination from the 2023-2024 NBA regular season.
+ The full dataset includes 32,385 observations and 30 variables. After filtering for starters, our working dataset contains 12,300 observations. This step ensures we are modeling players with consistent playing time, which improves model reliability and interpretability.
+
+To account for variation in opponent strength, we construct a proxy for team-level defensive effectiveness using defensive rating (DRTG): the average number of points allowed by a team across the season. This allows us to factor in how opposing defenses affect the likelihood of a player making a field goal on any given night.
+
+Our overall goal is to create a probabilistic modeling framework that incorporates both player-specific characteristics and opponent-level effects to estimate and predict field goal outcomes in future games. This framework can help highlight patterns in performance and inform matchup-based expectations in contexts such as playoff forecasting, daily fantasy sports, or team scouting.
+
+# 2 Exploratory Data Analysis
+
+## 2.1 Dataset Overview
+
+As stated in the Introduction, we filtered the dataset to include only players that started a game during the 2023-2024 NBA season. The resulting dataset has 30 columns and 12300 rows, with each row corresponding to a unique player-game entry. 7 columns are identifiers, 1 column is a row index, 2 are characteristic and comment columns, and then we have 20 numerical statistic columns.
+
+## 2.2 Key Variables for Modeling
+
+From the full box score, we focus on the following variables relevant to our modeling goals:
+
+  - `FGM` - Field goals made
+  - `FGA` - Field goals attempted
+  - `FG_PCT` - Field goal percentage
+  - `TEAM_ID` - Player’s team
+  - `OPP_TEAM_ID` - Opposing team (added manually through data wrangling)
+  - `GAME_ID` - Unique game identifier
+  - `START_POSITION` - Indicator for whether a player started
+
+We also constructed a derived variable, `DRTG_proxy`, to quantify the defensive strength of each team. This is computed as the average number of points allowed by each team across all games, based on the `PTS` column. We then center this value to produce `centered_OPP_DRTG` for use in the model.
+
+## 2.3 Summary Statistics
+
+To understand the general trends in field goal performance among NBA starters, we compute basic summary statistics for three key variables:
+
+* `FGM` (Field Goals Made)
+* `FGA` (Field Goals Attempted)
+* `FG_PCT` (Field Goal Percentage, computed as FGM / FGA)
+
+The table below reports the sample mean, standard deviation, minimum, and maximum for each variable across all player-game observations in our filtered dataset.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Summary table
+summary_stats <- data.frame(
+  Variable = c("FGM", "FGA", "FG_PCT"),
+  Mean = c(mean(starting_dat$FGM, na.rm = TRUE),
+           mean(starting_dat$FGA, na.rm = TRUE),
+           mean(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE)),
+  SD = c(sd(starting_dat$FGM, na.rm = TRUE),
+         sd(starting_dat$FGA, na.rm = TRUE),
+         sd(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE)),
+  Min = c(min(starting_dat$FGM, na.rm = TRUE),
+          min(starting_dat$FGA, na.rm = TRUE),
+          min(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE)),
+  Max = c(max(starting_dat$FGM, na.rm = TRUE),
+          max(starting_dat$FGA, na.rm = TRUE),
+          max(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE))
+)
+
+kable(summary_stats, digits = 3, caption = "Summary Statistics for Key Shooting Variables for NBA Starters")
+```
+
+The average NBA starter attempts roughly 12 field goals per game, making about 5.9 of them. This corresponds to a mean field goal percentage of 48.1%, which aligns with league-wide expectations for starters. However, the large standard deviations, particularly for FGA (SD $\approx 5.9$), indicate substantial variation in shot volume across players. The wide range of FG% values (from 0 to 1) reflects outliers due to either perfect shooting games or very low attempt games, highlighting the importance of modeling game-level variability.
+
+We also visualize the distribution of field goal attempts (FGA) to assess its skewness and variability:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(starting_dat, aes(x = FGA)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", alpha = 0.7, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0, max(starting_dat$FGA, na.rm = TRUE), by = 2), limits = c(0, NA)) +
+  labs(
+    title = "Distribution of Field Goals Attempted (FGA) for NBA Starters",
+    x = "FGA",
+    y = "Frequency") +
+  theme_minimal()
+```
+
+Starters take an average of 12 shots per game, but the distribution is skewed right, with some high-volume players attempting over 40 shots in a single game—a rare but influential occurrence.
+
+And we can do the same for field goals made (FGM):
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(starting_dat, aes(x = FGM)) +
+  geom_histogram(binwidth = 1, fill = "darkorange", alpha = 0.7, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0, max(starting_dat$FGM, na.rm = TRUE), by = 1), limits = c(0, NA)) +
+  labs(
+    title = "Distribution of Field Goals Made (FGM) for NBA Starters",
+    x = "FGM",
+    y = "Frequency") +
+  theme_minimal()
+```
+
+Although starters average nearly 6 made field goals per game, the range extends from 0 to 25. The majority fall below 10 FGM, justifying a Binomial model with varying success probability.
+
+To better understand player-level variability in scoring, we highlight the distribution of field goals made (FGM) for two prominent NBA starters: LeBron James and Stephen Curry. These players offer a useful contrast—both are prolific scorers, but they play different roles and have different shot profiles.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Filter and assign names manually
+notable_players <- starting_dat |> 
+  filter(PLAYER_ID %in% c(2544, 201939)) |> 
+  mutate(Player = case_when(
+    PLAYER_ID == 2544 ~ "LeBron James",
+    PLAYER_ID == 201939 ~ "Stephen Curry"))
+
+ggplot(notable_players, aes(x = FGM, fill = Player)) +
+  geom_histogram(binwidth = 1, position = "identity", alpha = 0.5, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0, max(notable_players$FGM, na.rm = TRUE), by = 1), limits = c(0, NA)) +
+  labs(
+    title = "Distribution of Field Goals Made (FGM)",
+    subtitle = "LeBron James vs. Stephen Curry (2023-2024 Season)",
+    x = "FGM",
+    y = "Frequency",
+    fill = "Player") +
+  theme_minimal()
+```
+
+While both LeBron James and Stephen Curry are elite scorers, their distributions of field goals made (FGM) reveal meaningful differences in scoring consistency. LeBron’s FGM distribution is more concentrated around 10-12 made field goals per game, reflecting a stable and reliable scoring output. In contrast, Curry's distribution is more spread out, with a wider range of outcomes and a longer right tail—he has both low-FGM games (e.g., 2-4) and explosive performances exceeding 17 FGM. This contrast aligns with their playing styles: LeBron tends to score efficiently and consistently through drives and post-ups, while Curry’s reliance on high-variance three-point shooting introduces more game-to-game fluctuation. These insights highlight why modeling player-specific shot distributions is important when forecasting performance against different opponents.
+
+These distributions support a Binomial modeling approach for FGM given FGA, and also motivate the inclusion of player-specific shot attempt distributions in later models.
+
+## 2.4 Focus Player: LeBron James
+
+To illustrate our modeling framework in a concrete setting, we focus on LeBron James as a case study. LeBron is a high-usage, consistent starter with a well-documented performance profile, making him an ideal player to highlight the effects of matchup strength on field goal outcomes. In the 2023-2024 season, LeBron has started in 71 games for his team, the Los Angeles Lakers, out of 82 total games played in the season.
+
+Below, we plot the distribution of LeBron’s field goal attempts (FGA) per game during the 2023-2024 regular season. This provides context for later modeling decisions that incorporate fixed or random shot attempt distributions.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(lebron_dat, aes(x = FGA)) +
+  geom_histogram(binwidth = 1, fill = "purple", alpha = 0.7, boundary = 0, closed = "left") +
+  labs(
+    title = "LeBron James - Field Goal Attempts (FGA)",
+    x = "Field Goal Attempts",
+    y = "Frequency") +
+  theme_minimal()
+```
+
+LeBron’s FGA distribution is moderately concentrated around 18 attempts per game, with occasional high-usage games exceeding 25 shots. His observed minimum, mean, median, and maximum FGA values are summarized below:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+lebron_fga_summary <- data.frame(
+  Statistic = c("Minimum", "Mean", "Median", "Maximum"),
+  FGA = round(c(min(lebron_dat$FGA, na.rm = TRUE),
+                mean(lebron_dat$FGA, na.rm = TRUE),
+                median(lebron_dat$FGA, na.rm = TRUE),
+                max(lebron_dat$FGA, na.rm = TRUE)))
+)
+kable(lebron_fga_summary, caption = "Summary of LeBron James' Field Goal Attempts per Game (2023-2024)")
+```
+
+These values serve as inputs for different fixed-attempt scenarios in our first model. Additionally, they help motivate more flexible approaches in Models 2 and 3, which allow for variability in shot volume across games.
+
+Finally, the histogram below shows LeBron’s game-level field goal percentage (FG%) across the season. This distribution informs our prior belief about his shooting efficiency:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(data.frame(FG_PCT = fg_pct), aes(x = FG_PCT)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "lightblue", alpha = 0.7) +
+  labs(
+    title = "LeBron James - Game-Level FG%",
+    x = "Field Goal Percentage",
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+
+LeBron's game-level field goal percentages are concentrated between 45% and 65%, with a clear unimodal structure and light tails on both ends. The distribution is slightly right-skewed but remains relatively symmetric overall. This shape supports the use of a Beta prior centered near 0.54, with moderate dispersion to account for game-to-game variability. The lack of extreme values (very low or very high FG%) suggests stable shooting performance, justifying a prior that reflects both consistency and moderate uncertainty.
+
+# 3 Bayesian Model Specification
+
+## 3.1 Proposed Models
+
+We propose three Bayesian models for predicting field goals made (\( y_{ijk} \)) by NBA starters. In all models, we assume:
+
+\[
+y_{ijk} \sim \text{Binomial}(n_{ijk}, p_{ik}), \quad p_{ik} = p_i \cdot \exp\left[\gamma(\text{DRTG}_k - \overline{\text{DRTG}})\right], \quad p_i \sim \text{Beta}(a_i, b_i)
+\]
+
+where:
+
+* $i$: indexes the player  
+* $j$: indexes the game  
+* $k$: indexes the opponent team  
+* $y_{ijk}$: number of field goals made by player $i$ in game $j$ against team $k$
+* $n_{ijk}$: number of field goal attempts by player $i$ in game $j$ vs. team $k$
+* $p_{ik}$: adjusted shooting probability for player $i$ against team $k$, after accounting for defense
+* $p_i$: baseline field goal percentage for player $i$
+* $\gamma$: opponent scaling parameter, controlling how much defensive strength affects $p_{ik}$
+* $\text{DRTG}_k$: defensive rating of team $k$
+* $\overline{\text{DRTG}}$: average defensive rating across all teams
+
+The models differ in how they handle the number of field goal attempts $n_{ijk}$, as described below.
+
+### 3.1.1 Model 1: Fixed Shot Attempts
+
+Model 1 assumes the number of field goal attempts per game, $n_{ijk}$, is fixed at a constant value $n_i$ for player $i$. For LeBron James, we consider three scenarios:
+\[
+n_i \in \left\{ \text{mean}, \text{median}, \text{max} \text{ FGA} \right\}
+\]
+
+The shooting success probability $p_{ik}$ is adjusted by the opponent’s defensive rating (DRTG):
+\[
+p_{ik} = p_i \cdot \exp\left[ \gamma \cdot \left(\text{DRTG}_k - \overline{\text{DRTG}}\right) \right]
+\]
+\[
+y_{ijk} \sim \text{Binomial}(n_i, p_{ik})
+\]
+
+Here, $\gamma = 0.01$ is a fixed scaling parameter. The baseline shooting ability $p_i$ is given a prior distribution, which we describe in Section 3.3.1.
+
+### 3.1.2 Model 2: Poisson Shot Attempts
+
+Model 2 assumes the number of field goal attempts $n_{ijk}$ follows a Poisson distribution:
+
+
+
+### 3.1.3 Model 3: Negative Binomial Shot Attempts
+
+Model 3 assumes the number of field goal attempts $n_{ijk}$ follows a Negative Binomial distribution:
+
+## 3.2 Likelihood & Hierarchical Structure
+
+> _[Insert DAG diagrams if available]_  
+> _[Latex for full hierarchical likelihood and joint distributions]_  
+
+## 3.3 Choice of Priors
+
+### 3.3.1 General Prior on $p_i$
+
+We place a Beta prior on each player's baseline field goal percentage $p_i$, using parameters estimated from their own game-level data. For LeBron James, we compute the sample mean and variance of his empirical field goal percentages across games, and apply the method of moments to estimate the Beta prior parameters $a_i$ and $b_i$:
+
+$$
+\hat{a}_i = \bar{p}_i \left( \frac{\bar{p}_i (1 - \bar{p}_i)}{s_i^2} - 1 \right), \quad 
+\hat{b}_i = (1 - \bar{p}_i) \left( \frac{\bar{p}_i (1 - \bar{p}_i)}{s_i^2} - 1 \right)
+$$
+
+For LeBron, the sample mean FG% is 0.5422451 and the sample variance is 0.01134541 This yields:
+
+$$
+a_i = 11.32102, \quad b_i = 9.557027
+$$
+
+The histogram below compares LeBron’s empirical field goal percentages to the fitted Beta distribution. This prior centers the distribution near his historical performance, with moderate concentration, allowing for uncertainty due to game-to-game variability.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(data.frame(FG_PCT = fg_pct), aes(x = FG_PCT)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "steelblue", alpha = 0.7) +
+  stat_function(fun = dbeta, args = list(shape1 = alpha_est, shape2 = beta_est),
+                color = "darkred", size = 1.2, linetype = "dashed") +
+  labs(
+    title = sprintf("LeBron FG%% vs Fitted Beta(%.1f, %.1f)", alpha_est, beta_est),
+    x = "Field Goal Percentage", y = "Density"
+  ) +
+  theme_minimal()
+```
+
+For other players, we apply the same method to estimate player-specific $a_i$ and $b_i$, ensuring priors reflect each player's shooting profile.
+
+### 3.3.2 Model-Specific Priors
+
+#### Model 1
+\[ n_{ijk} = n_i \in \{\text{mean}, \text{median}, \text{max}\} \]
+\( \gamma = 0.01 \)
+
+#### Model 2
+\[ n_{ijk} \sim \text{Poisson}(\lambda_i), \quad \lambda_i \sim \text{Gamma}(\alpha, \beta) \]
+\( \gamma = 0.01 \), Jeffreys prior or weakly informative \( \Gamma \) prior.
+
+#### Model 3
+\[ n_{ijk} \sim \text{NegBin}(r_i, \theta_i) \]
+With appropriate priors on \( r_i \), \( \theta_i \). We used empirical tuning and Jeffreys-like priors.
+
+## 3.4 Sensitivity Analysis
+
+> _[Discuss effect of different \( n_i \) in Model 1 — how predictions changed under mean, median, max]_  
+
+## 3.5 Posterior Predictive Diagnostics
+
+> _[Include PPC histograms, overlayed prediction intervals, plots comparing observed vs. predicted]_
+
+### 3.5.1 Model 1
+
+For posterior predictive checks under Model 1, we simulate field goals made (FGM) by LeBron James in a hypothetical future game against the Golden State Warriors (GSW). These simulations incorporate both posterior uncertainty about LeBron’s shooting ability and the defensive impact of GSW.
+
+We begin with posterior samples of LeBron’s baseline shooting percentage, $p_i \sim \text{Beta}(11.32102, 9.557027)$, obtained via a Metropolis-Hastings algorithm using data from the 2023-2024 season. These samples are then adjusted for opponent defense using:
+
+$$
+p_{\text{GSW}}^{(s)} = p_i^{(s)} \cdot \exp\left[\gamma \cdot (\text{DRTG}_{\text{GSW}} - \overline{\text{DRTG}})\right], \quad \gamma = 0.01
+$$
+
+This produces a distribution of opponent-adjusted probabilities $p_{\text{GSW}}^{(s)}$, which we use to simulate predicted FGMs from the binomial model:
+
+$$
+\text{FGM}^{(s)} \sim \text{Binomial}(n_i, p_{\text{GSW}}^{(s)})
+$$
+
+We repeat this process for three different shot volume assumptions, based on LeBron’s empirical data:
+
+* Mean number of attempts: $n_i = 18$
+* Median number of attempts: $n_i = 18$
+* Maximum observed attempts: $n_i = 27$
+
+Each histogram below displays 1,000 posterior predictive draws of FGM for one of the three values of $n_i$. These provide a visual summary of uncertainty in LeBron’s scoring outcomes against GSW under different usage levels.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+par(mfrow = c(1, 3), mar = c(4, 4, 2, 1))
+
+hist(fgm_sim_mean, main = "Simulated FGM vs GSW\n(n = 18: Mean FGA)", 
+     xlab = "FGM", col = "skyblue", breaks = 15)
+abline(v = mean(fgm_sim_mean), col = "red", lwd = 2)
+
+hist(fgm_sim_median, main = "Simulated FGM vs GSW\n(n = 18: Median FGA)", 
+     xlab = "FGM", col = "orange", breaks = 15)
+abline(v = mean(fgm_sim_median), col = "red", lwd = 2)
+
+hist(fgm_sim_max, main = "Simulated FGM vs GSW\n(n = 27: Max FGA)", 
+     xlab = "FGM", col = "lightgreen", breaks = 15)
+abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
+```
+
+These posterior predictive distributions illustrate how LeBron’s expected scoring outcomes against GSW vary as a function of his shot volume. Because the opponent-adjusted shooting percentage $p_{\text{GSW}}$ is held fixed across all three scenarios, the differences in the histograms are driven entirely by the assumed number of shot attempts $n_i$. This allows us to isolate how usage (rather than defensive strength) affects the range of expected field goals made in a single game.
+
+
+
+
+### 3.5.2 Model 2
+
+
+### 3.5.3 Model 3
+
+
+# 4 Results
+
+## 4.1 MCMC Sampler
+
+### 4.1.1 Model 1
+
+We implemented a custom Metropolis-Hastings (MH) algorithm to draw posterior samples for $p_i$, given a fixed vector of shot attempts $n_i$ and observed field goals made $y_{ijk}$. The posterior log-density is:
+
+$$
+\log q(p) = \sum_j \log \Pr(y_{ij} \mid n_i, p) + \log \pi(p)
+$$
+
+where $\pi(p) \sim \text{Beta}(11.32102, 9.557027)$ is the prior based on LeBron’s historical field goal percentages via method-of-moments.
+
+The algorithm uses a Normal random walk proposal:
+\begin{itemize}
+\item Proposal: $p^* \sim \mathcal{N}(p_{\text{current}}, \sigma^2)$
+\item Accept with probability $\min(1, \exp(\log q(p^*) - \log q(p_{\text{current}})))$
+\end{itemize}
+
+We ran 3 parallel chains with starting values 0.3, 0.5, and 0.7. Each chain contains 1000 iterations.
+
+Model 1 is evaluated using three different values for the fixed shot attempt count $n_i$:
+
+$$
+n_i \in \left\{ \text{mean}, \text{median}, \text{max} \right\}
+$$
+
+For LeBron James, these values are:
+
+$$
+\text{mean}(n_i) = 18, \quad \text{median}(n_i) = 18, \quad \text{max}(n_i) = 27
+$$
+
+The posterior samples of $p_i$ are later used to compute matchup-adjusted probabilities $p_{ik}$ and to simulate predictive distributions for field goals made under different scenarios.
+
+### 4.1.2 Model 2
+
+### 4.1.3 Model 3
+
+> _[Describe MH/Gibbs steps for each, proposal distributions, tuning]_  
+
+## 4.2 MCMC Diagnostics
+
+> _[Show traceplots, Rhat, running means, ESS]_  
+
+### 4.2.1 Model 1
+
+Below are the traceplots and autocorrelation functions (ACF) for each of the three MCMC chains. These help assess mixing and convergence.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+par(mfrow = c(3, 2), mar = c(4, 4, 2, 1))
+for (i in 1:3) {
+  chain <- chains[[i]]
+  plot(chain, type = "l", main = paste("Traceplot: Chain", i), ylab = "p", xlab = "Iteration")
+  acf(chain, main = paste("ACF: Chain", i), lag.max = 40)
+}
+```
+
+We also visualize the running means for each chain to assess convergence to a stable posterior distribution.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+par(mfrow = c(1, 1))
+plot(cumsum(chains[[1]]) / seq_along(chains[[1]]), type = "l", col = "blue", ylim = c(0.4, 0.7), ylab = "Running Mean", xlab = "Iteration")
+lines(cumsum(chains[[2]]) / seq_along(chains[[2]]), col = "red")
+lines(cumsum(chains[[3]]) / seq_along(chains[[3]]), col = "green")
+legend("bottomright", legend = c("Chain 1", "Chain 2", "Chain 3"), col = c("blue", "red", "green"), lty = 1)
+```
+
+### 4.2.1 Model 2
+
+
+### 4.2.2 Model 3
+
+
+
+## 4.3 Model Comparison
+
+> _[Include Bayes factor calculations, formulas and R code]_  
+> _[Insert results table with model weights]_  
+> _[Show barplot of model posterior probabilities]_  
+
+# 5 Discussion
+
+> _[Summarize performance of each model, discuss practical takeaways]_  
+> _[Highlight limitations and possible extensions]_  
+
+# Appendix
+
+## A.1 Data Tidying Code
+```{r, echo = TRUE, eval = FALSE}
+# Data cleaning and filtering steps here
+original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv") |> 
+  mutate(
+    START_POSITION = na_if(START_POSITION, "") |> factor(),
+    COMMENT = na_if(COMMENT, "") |> factor(),
+    MIN = na_if(MIN, ""),
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
+  )
+
+starting_dat <- original_tbl |> filter(!is.na(START_POSITION))
+
+team_points <- original_tbl |> 
+  filter(!is.na(PTS)) |> 
+  group_by(GAME_ID, TEAM_ID) |> 
+  summarize(TeamPoints = sum(PTS), .groups = "drop")
+
+team_vs_opponent <- team_points |> 
+  inner_join(team_points, by = "GAME_ID", suffix = c("", ".opp")) |> 
+  filter(TEAM_ID != TEAM_ID.opp) |> 
+  rename(OPP_TEAM_ID = TEAM_ID.opp, OpponentPoints = TeamPoints.opp)
+
+drtg <- team_vs_opponent |> 
+  group_by(TEAM_ID) |> 
+  summarize(DRTG_proxy = mean(OpponentPoints), .groups = "drop")
+
+game_team_pairs <- original_tbl |> select(GAME_ID, TEAM_ID) |> distinct()
+
+opponent_map <- game_team_pairs |> 
+  inner_join(game_team_pairs, by = "GAME_ID") |> 
+  filter(TEAM_ID.x != TEAM_ID.y) |> 
+  rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y) |> 
+  left_join(drtg |> rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy), by = "OPP_TEAM_ID")
+
+mean_drtg <- mean(drtg$DRTG_proxy)
+
+starting_dat <- starting_dat |> 
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID")) |> 
+  mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
+```
+
+## A.3 Method of Moments Code for Deriving Beta Prior
+
+```{r, echo = TRUE, eval = FALSE}
+# Empirical FG%
+fg_pct <- lebron_dat$FGM / lebron_dat$FGA
+mean_fg <- mean(fg_pct, na.rm = TRUE)
+var_fg <- var(fg_pct, na.rm = TRUE)
+
+# Method of moments estimation for Beta(a,b)
+alpha_est <- mean_fg * ((mean_fg * (1 - mean_fg) / var_fg) - 1)
+beta_est  <- (1 - mean_fg) * ((mean_fg * (1 - mean_fg) / var_fg) - 1)
+
+# Plot empirical FG% with fitted Beta prior
+ggplot(data.frame(FG_PCT = fg_pct), aes(x = FG_PCT)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "steelblue", alpha = 0.7) +
+  stat_function(fun = dbeta, args = list(shape1 = alpha_est, shape2 = beta_est),
+                color = "darkred", size = 1.2, linetype = "dashed") +
+  labs(
+    title = sprintf("LeBron FG%% vs Fitted Beta(%.1f, %.1f)", alpha_est, beta_est),
+    x = "Field Goal Percentage", y = "Density"
+  ) +
+  theme_minimal()
+```
+
+
+## A.2 MCMC Algorithms
+```{r}
+# Custom samplers for Models 1, 2, 3
+```
+
+# References
+
+- Kaggle dataset: NBA Boxscore - Season 2023 / 2024 by Alberto Filosa  
+- Project GitHub repo: https://github.com/ArgentCode/Stat5440Project
+
+> _[Include any relevant textbooks or class notes you referenced]_
