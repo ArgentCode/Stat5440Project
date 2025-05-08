@@ -91,7 +91,7 @@ $$
 \begin{aligned}
   p_{ik} &\sim \phi*p_i\\
   \phi &= \text{defensive metrics}\\
-  p_i &\sim beta(a,b)
+  p_i &\sim beta(a_i,b_i)
 \end{aligned}
 $$
 
@@ -127,4 +127,18 @@ p(r, \theta) \propto \sqrt{\frac{r_i}{\theta^2}(1 - \theta_i)} \quad \text{(Jeff
 \end{array} \\
 \hline
 \end{array}
+$$
+
+$$
+n_{ijk} = Fixed
+$$
+
+$$
+n_{ijk} \sim \text{Poisson}(\lambda)
+$$
+
+
+$$
+n_{ijk} \sim \text{NegBinom}(r, \theta)\\
+p(r, \theta) \propto \sqrt{\frac{r_i}{\theta^2}(1 - \theta_i)} \quad \text{(Jeffreys prior)}
 $$

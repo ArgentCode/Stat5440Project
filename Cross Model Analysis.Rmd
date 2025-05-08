@@ -142,11 +142,13 @@ model_1 <- MH_beta_grid_search(current = 0.5,
                                  n_vec = N_vec, 
                                  n_iter = n_iter)
 
-#Decided on using max for n
+gamma_val = 0.01
 p_samples = model_1$samples
-model_1_mean_samps = rbinom(n_iter-burnin, round(mean(N_vec)), p_samples[burnin:n_iter])
-model_1_median_samps = rbinom(n_iter-burnin, median(N_vec), p_samples[burnin:n_iter])
-model_1_max_samps = rbinom(n_iter-burnin, max(N_vec), p_samples[burnin:n_iter])
+drtg_gsw = player_dat$centered_OPP_DRTG
+p_ik_gsw <- p_samples * exp(gamma_val * drtg_gsw) |> pmin(1)
+model_1_mean_samps = rbinom(n_iter-burnin, round(mean(N_vec)), p_ik_gsw[burnin:n_iter])
+model_1_median_samps = rbinom(n_iter-burnin, median(N_vec), p_ik_gsw[burnin:n_iter])
+model_1_max_samps = rbinom(n_iter-burnin, max(N_vec), p_ik_gsw[burnin:n_iter])
 ```
 
 
@@ -413,9 +415,7 @@ hist(rbinom(10000,round(mean(lebron_GSW_n)),mean(player_dat$FG_PCT)),col=rgb(1,1
 
 ```{r}
 true_samps = rbinom(n_iter-burnin,round(mean(player_dat$FGA)),mean(player_dat$FG_PCT))
-df = data.frame(Mean = model_1_mean_samps,
-                Poisson = model_2_samps,
-                NegBinom = model_3_samps,
+df = data.frame(NegBinom = model_3_samps,
                 True = true_samps)
 
 df_long <- df |>
@@ -435,9 +435,8 @@ df_long |>
     fill = "Group"
   ) +
   xlim(5,25) +
-  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
-  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
-  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
+  geom_vline(xintercept = mean(model_3_samps), color = "red", linetype = "dotted", size = 1) +
+  geom_vline(xintercept = mean(true_samps), color = "blue", linetype = "dotted", size = 1) +
   theme_minimal()
 ```
 

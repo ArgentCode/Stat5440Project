@@ -1,0 +1,990 @@
+---
+title: "Master Code"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data prep and model creation
+
+## data preparation
+
+```{r, warning = FALSE, echo = FALSE, message = FALSE}
+library(dplyr)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(coda)
+```
+
+```{r, warning = FALSE, echo = FALSE, message = FALSE}
+# Data Cleaning and Prep
+original_tbl <- read.csv("./NBA-BoxScores-2023-2024.csv") |> 
+  mutate(
+    START_POSITION = na_if(START_POSITION, "") |> factor(),
+    COMMENT = na_if(COMMENT, "") |> factor(),
+    MIN = na_if(MIN, ""),
+    MIN = str_replace(MIN, "([0-9]+)\\.[0-9]+:", "\\1:")
+  )
+
+starting_dat <- original_tbl |> filter(!is.na(START_POSITION))
+
+team_points <- original_tbl |> 
+  filter(!is.na(PTS)) |> 
+  group_by(GAME_ID, TEAM_ID) |> 
+  summarize(TeamPoints = sum(PTS), .groups = "drop")
+
+team_vs_opponent <- team_points |> 
+  inner_join(team_points, by = "GAME_ID", suffix = c("", ".opp")) |> 
+  filter(TEAM_ID != TEAM_ID.opp) |> 
+  rename(OPP_TEAM_ID = TEAM_ID.opp, OpponentPoints = TeamPoints.opp)
+
+drtg <- team_vs_opponent |> 
+  group_by(TEAM_ID) |> 
+  summarize(DRTG_proxy = mean(OpponentPoints), .groups = "drop")
+
+game_team_pairs <- original_tbl |> select(GAME_ID, TEAM_ID) |> distinct()
+
+opponent_map <- game_team_pairs |> 
+  inner_join(game_team_pairs, by = "GAME_ID") |> 
+  filter(TEAM_ID.x != TEAM_ID.y) |> 
+  rename(TEAM_ID = TEAM_ID.x, OPP_TEAM_ID = TEAM_ID.y) |> 
+  left_join(drtg |> rename(OPP_TEAM_ID = TEAM_ID, OPP_DRTG = DRTG_proxy), by = "OPP_TEAM_ID")
+
+mean_drtg <- mean(drtg$DRTG_proxy)
+
+starting_dat <- starting_dat |> 
+  left_join(opponent_map, by = c("GAME_ID", "TEAM_ID")) |> 
+  mutate(centered_OPP_DRTG = OPP_DRTG - mean_drtg)
+
+lebron_dat <- starting_dat |> filter(PLAYER_ID == 2544)
+lebron_GSW_dat = lebron_dat[lebron_dat$OPP_TEAM_ID == 1610612744, ]
+
+# LeBron alpha and beta calculation for Beta prior (all models)
+# Empirical FG%
+fg_pct <- lebron_dat$FGM / lebron_dat$FGA
+mean_fg <- mean(fg_pct, na.rm = TRUE)
+var_fg <- var(fg_pct, na.rm = TRUE)
+
+# Method of moments estimation for Beta(a,b)
+alpha_est <- mean_fg * ((mean_fg * (1 - mean_fg) / var_fg) - 1)
+beta_est  <- (1 - mean_fg) * ((mean_fg * (1 - mean_fg) / var_fg) - 1)
+
+
+n_iter<- 10000 # run each model 10k times
+# 2544 for lebron
+player_id = 2544
+# 1610612744 vfor GSW
+opp_team_id = 1610612744
+```
+
+## model 1
+
+```{r, warning = FALSE, echo = FALSE, message = FALSE}
+# MODEL 1
+log_q = function(theta, y, n) {
+  if (theta < 0 || theta > 1) return(-Inf)
+  sum(dbinom(y, size = n, prob = theta, log = TRUE)) + dbeta(theta, alpha_est, beta_est, log = TRUE)
+}
+
+MH_beta_binom = function(current, prop_sd, n_vec, y_vec, n_iter = 1000) {
+  samps = numeric(n_iter)
+  for (i in 1:n_iter) {
+    proposed = rnorm(1, current, prop_sd)
+    logr = log_q(proposed, y_vec, n_vec) - log_q(current, y_vec, n_vec)
+    if (log(runif(1)) < logr) current = proposed
+    samps[i] = current
+  }
+  return(samps)
+}
+
+set.seed(5440)
+Y <- lebron_dat$FGM
+N_vec <- lebron_dat$FGA
+
+chains <- lapply(c(0.3, 0.5, 0.7), function(init) MH_beta_binom(init, 0.05, N_vec, Y, n_iter = n_iter))
+
+p_samples <- unlist(chains)  # Combine chains
+
+drtg_vec <- lebron_dat |> 
+  group_by(OPP_TEAM_ID) |> 
+  summarize(centered_OPP_DRTG = first(centered_OPP_DRTG), .groups = "drop") |> 
+  arrange(OPP_TEAM_ID) |> 
+  pull(centered_OPP_DRTG)
+
+gamma_val <- 0.01
+p_ik_matrix <- outer(p_samples, drtg_vec, function(p, drtg) p * exp(gamma_val * drtg)) |> pmin(1)
+
+p_ik_mean <- colMeans(p_ik_matrix)
+p_ik_CI <- apply(p_ik_matrix, 2, quantile, probs = c(0.025, 0.975))
+
+p_ik_summary <- data.frame(
+  OPP_TEAM_ID = sort(unique(lebron_dat$OPP_TEAM_ID)),
+  p_ik_mean = p_ik_mean,
+  p_ik_lower = p_ik_CI[1,],
+  p_ik_upper = p_ik_CI[2,]
+)
+
+drtg_gsw <- p_ik_summary |> filter(OPP_TEAM_ID == 1610612744) |> pull(p_ik_mean)
+p_ik_gsw <- p_samples * exp(gamma_val * (drtg_gsw - mean(drtg_vec))) |> pmin(1)
+
+n_mean <- round(mean(lebron_dat$FGA, na.rm = TRUE))
+n_median <- round(median(lebron_dat$FGA, na.rm = TRUE))
+n_max <- max(lebron_dat$FGA, na.rm = TRUE)
+
+set.seed(5440)
+fgm_sim_mean <- rbinom(n_iter, size = n_mean, prob = p_ik_gsw)
+fgm_sim_median <- rbinom(n_iter, size = n_median, prob = p_ik_gsw)
+fgm_sim_max <- rbinom(n_iter, size = n_max, prob = p_ik_gsw)
+```
+
+## Model 2 
+```{r, warning = FALSE, echo = FALSE, message = FALSE}
+# MODEL 2
+log_n_con = function(p, lambda, n, y) {
+  if (all(is.nan(log( ((1-p)*lambda)^sum(n) ) - sum(log((factorial(n-y)))) ))){
+    return(rep(-Inf,length(y)))
+  }else{
+    log( ((1-p)*lambda)^sum(n) ) - sum(log((factorial(n-y))))
+  }
+}
+mcmc_model_2 = function(data, player_id, opp_team_id, n_iter=5000,
+                        init_lambda = c(), init_n = c(), gamma=0.01,
+                        alpha_i, beta_i) {
+  # Gather true data
+  player_dat = data[data$PLAYER_ID == player_id, ]
+  player_dat = player_dat[player_dat$OPP_TEAM_ID == opp_team_id, ]
+  y = player_dat$FGM
+  true_n = player_dat$FGA
+  def_factor<- exp(gamma*(data$centered_OPP_DRTG[1]))
+  if(length(init_lambda) ==0) {
+    init_lambda = mean(player_dat$FGA)
+  }
+  if(length(init_n) ==0) {
+    init_n = mean(player_dat$FGA)
+  }
+  
+  
+  big_N<- length(y)
+  lambda<- init_lambda
+  n<- rep(init_n,big_N)
+  
+  # setting up lists/matrices for returning
+  p_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  lambda_list<- rep(lambda, n_iter)
+  n_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  y_new_list <- rep(NA, n_iter)
+  n_new_list <- rep(NA, n_iter)
+  
+  for (i in 1:n_iter) {
+    # sample p
+    p_unscaled <- rbeta(big_N, alpha_i + sum(y), beta_i + sum(n-y))
+    p <- p_unscaled*def_factor
+    
+    # sample lambda
+    lambda<- rgamma(1,shape=sum(n)-1/2,rate=big_N)
+    
+    # sample n
+    n_prop<- rnorm(big_N, n, 1) # the third 1 is a tuning parameter
+    logr<- log_n_con(p, lambda, n_prop, y)-log_n_con(p, lambda, n, y)
+    for (j in 1:length(logr)) {
+      if (is.finite(logr[j]) && log(runif(1))<logr[j]) {
+        n[j]<- n_prop[j]
+      }
+    }
+    
+    # generate new values
+    n_new = rpois(1, lambda)
+    y_new <- rbinom(1, size = n_new, prob = mean(p))
+    
+    # save values
+    p_matrix[i,] = p
+    n_matrix[i,] = n
+    lambda_list[i] = lambda
+    n_new_list[i] = n_new
+    y_new_list[i] =  y_new
+  }
+  return(data.frame(iteration=1:n_iter, parameter=rep(c(paste("n[",1:big_N,"]", sep=""), "lambda", "n_new", "y_new", paste("p[",1:big_N,"]", sep="")), each=n_iter),                value=c(as.numeric(n_matrix),lambda_list,n_new_list,y_new_list, as.numeric(p_matrix))))
+}
+
+MCMC_model_2 = mcmc_model_2(data = starting_dat,
+                            player_id = 2544, #LeBron
+                            opp_team_id = 1610612744, #GSW
+                            n_iter=n_iter,
+                            gamma=0.01, #Previously found to be good value
+                            alpha_i = alpha_est,
+                            beta_i = beta_est)
+```
+
+## Model 3
+
+
+```{r, warning = FALSE, echo = FALSE, message = FALSE}
+
+
+# MODEL 3
+log_n_con = function(n, r, theta, y,p) {
+  dummy<- sum(log((factorial(n+r-1)))) - sum(log((factorial(n-y)))) + log((1-theta)*((1-p)^sum(n)))
+  if (all(is.nan(dummy))){
+    return(rep(-Inf,length(n)))
+  }else{
+    return(dummy)
+  }
+}
+log_r_con = function(n, r, theta, y) {
+  dummy<- sum(log((factorial(n+r-1)))) - sum(log((factorial(r-1)))) + log(theta^sum(r)) + log(r^(length(y)/2))
+  if (all(is.nan(dummy))){
+    return(rep(-Inf,length(r)))
+  }else{
+    return(dummy)
+  }
+}
+mcmc_model_3 = function(data, player_id, opp_team_id, gamma = 0.01,
+                        n_iter=n_iter, init_r, init_theta, init_n, init_p,
+                        prop_r_sd = 3.5, prop_n_sd = 3.5,
+                        alpha_i, beta_i) {
+  # Gather true data
+  player_dat = data[data$PLAYER_ID == player_id, ]
+  player_dat = player_dat[player_dat$OPP_TEAM_ID == opp_team_id, ]
+  y = player_dat$FGM
+  true_n = player_dat$FGA
+  def_factor<- exp(gamma*(data$centered_OPP_DRTG[1]))
+  
+  # Start code
+  big_N<- length(y)
+  r<- init_r
+  theta<- init_theta
+  n<- rep(init_n,big_N)
+  p<- init_p
+  
+  # setting up lists/matrices for returning
+  r_list<- rep(NA, n_iter)
+  theta_list<- rep(NA, n_iter)
+  p_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  n_matrix<- matrix(NA, nrow=n_iter, ncol=big_N)
+  
+  for (i in 1:n_iter) {
+    # sample p
+    p_unscaled<- rbeta(big_N, alpha_i + sum(y), beta_i + sum(true_n-y))
+    p<- p_unscaled*def_factor
+    
+    # sample theta
+    theta<- rbeta(1,sum(n)+1/2,r-1)
+    
+    # sample r
+    r_prop<- rnorm(1, r, prop_r_sd) # the third 1 is a tuning parameter
+    logr<- log_r_con(n, r_prop, theta, y)-log_r_con(n, r, theta, y)
+    if (is.finite(logr)) {
+      if (log(runif(1))<logr) {
+        r<- r_prop
+      }
+    }
+    
+    # sample n
+    n_prop<- rnorm(big_N, n, prop_n_sd) # the third 1 is a tuning parameter
+    logr<- log_n_con(n_prop, r, theta, y,p)-log_n_con(n, r, theta, y,p)
+    for (j in 1:length(logr)) {
+      if (is.finite(logr[j])) {
+        if (log(runif(1))<logr[j]) {
+          n[j]<- n_prop[j]
+        }
+      }
+    }
+
+    # save values
+    r_list[i] = r
+    theta_list[i] = theta
+    p_matrix[i,] = p
+    n_matrix[i,] = n
+  }
+  return(data.frame(iteration=1:n_iter,
+                    parameter=rep(c("r","theta",paste("p[",1:big_N,"]", sep=""),paste("n[",1:big_N,"]", sep="")),each=n_iter),
+                    value=c(r_list,theta_list,as.numeric(p_matrix),as.numeric(n_matrix))))
+}
+
+init_r<- max(lebron_GSW_dat$FGA) # maybe tune?
+init_theta<- mean(lebron_GSW_dat$FG_PCT) # maybe tune ?
+init_p<- mean(lebron_GSW_dat$FG_PCT) # maybe tune ?
+init_n<- round(mean(lebron_GSW_dat$FGA)) #maybe tune ?
+
+MCMC_model_3 = suppressWarnings(mcmc_model_3(starting_dat, player_id = 2544, opp_team_id = 1610612744, gamma=0.01,
+                            n_iter=n_iter, init_r,init_theta,init_n,init_p,
+                            prop_r_sd=3.7, prop_n_sd = 3.7,
+                            alpha_i = alpha_est,
+                            beta_i = beta_est))
+```
+
+# Getting into the document now
+
+## 2.3 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+# TODO
+# Summary table
+summary_stats <- data.frame(
+  Variable = c("FGM", "FGA", "FG_PCT"),
+  Mean = c(mean(starting_dat$FGM, na.rm = TRUE),
+           mean(starting_dat$FGA, na.rm = TRUE),
+           mean(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE)),
+  SD = c(sd(starting_dat$FGM, na.rm = TRUE),
+         sd(starting_dat$FGA, na.rm = TRUE),
+         sd(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE)),
+  Min = c(min(starting_dat$FGM, na.rm = TRUE),
+          min(starting_dat$FGA, na.rm = TRUE),
+          min(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE)),
+  Max = c(max(starting_dat$FGM, na.rm = TRUE),
+          max(starting_dat$FGA, na.rm = TRUE),
+          max(starting_dat$FGM / starting_dat$FGA, na.rm = TRUE))
+)
+
+kable(summary_stats, digits = 3, caption = "Summary Statistics for Key Shooting Variables for NBA Starters")
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+plot_2.3b = ggplot(starting_dat, aes(x = FGA)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", alpha = 0.7, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0, max(starting_dat$FGA, na.rm = TRUE), by = 2), limits = c(0, NA)) +
+  labs(
+    title = "Distribution of Field Goals Attempted (FGA) for NBA Starters",
+    x = "FGA",
+    y = "Frequency")
+
+ggsave("images/2.3b.png", plot = plot_2.3b, dpi = 300)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+plot_2.3c = ggplot(starting_dat, aes(x = FGM)) +
+  geom_histogram(binwidth = 1, fill = "darkorange", alpha = 0.7, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0, max(starting_dat$FGM, na.rm = TRUE), by = 1), limits = c(0, NA)) +
+  labs(
+    title = "Distribution of Field Goals Made (FGM) for NBA Starters",
+    x = "FGM",
+    y = "Frequency")
+ggsave("images/2.3c.png", plot = plot_2.3c, dpi = 300)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Filter and assign names manually
+notable_players <- starting_dat |> 
+  filter(PLAYER_ID %in% c(2544, 201939)) |> 
+  mutate(Player = case_when(
+    PLAYER_ID == 2544 ~ "LeBron James",
+    PLAYER_ID == 201939 ~ "Stephen Curry"))
+
+plot_2.3d = ggplot(notable_players, aes(x = FGM, fill = Player)) +
+  geom_histogram(binwidth = 1, position = "identity", alpha = 0.5, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0, max(notable_players$FGM, na.rm = TRUE), by = 1), limits = c(0, NA)) +
+  labs(
+    title = "Distribution of Field Goals Made (FGM)",
+    subtitle = "LeBron James vs. Stephen Curry (2023-2024 Season)",
+    x = "FGM",
+    y = "Frequency",
+    fill = "Player") +
+  theme_minimal()
+ggsave("images/2.3d.png", plot = plot_2.3d, dpi = 300)
+```
+
+## 2.4
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+plot_2.4a = ggplot(lebron_dat, aes(x = FGA)) +
+  geom_histogram(binwidth = 1, fill = "purple", alpha = 0.7, boundary = 0, closed = "left") +
+  labs(
+    title = "LeBron James - Field Goal Attempts (FGA)",
+    x = "Field Goal Attempts",
+    y = "Frequency") +
+  theme_minimal()
+ggsave("images/2.4a.png", plot = plot_2.4a, dpi = 300)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# TODO
+lebron_fga_summary <- data.frame(
+  Statistic = c("Minimum", "Mean", "Median", "Maximum"),
+  FGA = round(c(min(lebron_dat$FGA, na.rm = TRUE),
+                mean(lebron_dat$FGA, na.rm = TRUE),
+                median(lebron_dat$FGA, na.rm = TRUE),
+                max(lebron_dat$FGA, na.rm = TRUE)))
+)
+kable(lebron_fga_summary, caption = "Summary of LeBron James' Field Goal Attempts per Game (2023-2024)")
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+plot_2.4c = ggplot(data.frame(FG_PCT = fg_pct), aes(x = FG_PCT)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "lightblue", alpha = 0.7) +
+  labs(
+    title = "LeBron James - Game-Level FG%",
+    x = "Field Goal Percentage",
+    y = "Density"
+  ) +
+  theme_minimal()
+ggsave("images/2.4c.png", plot = plot_2.4c, dpi = 300)
+```
+
+# 3 Bayesian Model Specification
+
+## 3.1
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+plot_3.1 = ggplot(data.frame(FG_PCT = fg_pct), aes(x = FG_PCT)) +
+  geom_histogram(aes(y = ..density..), bins = 20, fill = "steelblue", alpha = 0.7) +
+  stat_function(fun = dbeta, args = list(shape1 = alpha_est, shape2 = beta_est),
+                color = "darkred", size = 1.2, linetype = "dashed") +
+  labs(
+    title = sprintf("LeBron FG%% vs Fitted Beta(%.1f, %.1f)", alpha_est, beta_est),
+    x = "Field Goal Percentage", y = "Density"
+  ) +
+  theme_minimal()
+ggsave("images/3.1.png", plot = plot_3.1, dpi = 300)
+```
+### 3.3.1
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Individual histograms
+# par(mfrow = c(3, 1), mar = c(4, 4, 2, 1))
+# # Posterior Predictive for GSW
+# hist(fgm_sim_mean, main = paste("Simulated FGM vs GSW (n =", n_mean, ")"), xlab = "FGM", col = "skyblue", breaks = 15)
+# abline(v = mean(fgm_sim_mean), col = "red", lwd = 2)
+# 
+# hist(fgm_sim_median, main = paste("Simulated FGM vs GSW (n =", n_median, ")"), xlab = "FGM", col = "orange", breaks = 15)
+# abline(v = mean(fgm_sim_median), col = "red", lwd = 2)
+# 
+# hist(fgm_sim_max, main = paste("Simulated FGM vs GSW (n =", n_max, ")"), xlab = "FGM", col = "lightgreen", breaks = 15)
+# abline(v = mean(fgm_sim_max), col = "red", lwd = 2)
+
+true_samps = rbinom(length(fgm_sim_mean),round(mean(lebron_GSW_dat$FGA)),mean(lebron_GSW_dat$FG_PCT))
+df = data.frame(Mean = fgm_sim_mean,
+                Median = fgm_sim_median,
+                Max = fgm_sim_max,
+                True = true_samps)
+
+df_long <- df |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "group",
+    values_to = "value"
+  )
+
+player_name = unique(starting_dat$PLAYER_NAME[starting_dat$PLAYER_ID == player_id])
+opp_team_name = starting_dat$TEAM_ABBREVIATION[starting_dat$TEAM_ID == opp_team_id][1]
+
+title = paste("Model comparison for", player_name, " against ", opp_team_name)
+plot_3.3.1 = df_long |>
+  ggplot(aes(x = value, fill = group)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = title,
+    x = "Value",
+    y = "Count",
+    fill = "Group"
+  ) +
+  xlim(5,25) +
+  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
+  theme_minimal()
+
+ggsave("images/3.3.1.png", plot = plot_3.3.1, dpi = 300)
+```
+
+### 3.3.2
+
+```{r, echo = FALSE}
+# running mcmc
+
+### Traceplots
+lambda<- MCMC_model_2$value[which(MCMC_model_2$parameter=="lambda")]
+n1<- round(MCMC_model_2$value[which(MCMC_model_2$parameter=="n[1]")])
+n2<- round(MCMC_model_2$value[which(MCMC_model_2$parameter=="n[2]")])
+n3<- round(MCMC_model_2$value[which(MCMC_model_2$parameter=="n[3]")])
+p1<- MCMC_model_2$value[which(MCMC_model_2$parameter=="p[1]")]
+p2<- MCMC_model_2$value[which(MCMC_model_2$parameter=="p[2]")]
+p3<- MCMC_model_2$value[which(MCMC_model_2$parameter=="p[3]")]
+
+n_new<- MCMC_model_2$value[which(MCMC_model_2$parameter=="n_new")]
+y_new<- MCMC_model_2$value[which(MCMC_model_2$parameter=="y_new")]
+
+### I don't think this is actually the Predictive Posterior
+posterior_mean_ps_model_2<- apply(data.frame(p1,p2,p3),1,mean)
+posterior_mean_ns_model_2<- round(apply(data.frame(n1,n2,n3),1,mean))
+# making the y's using our posterior sample
+y_model_2<- rbinom(n_iter,posterior_mean_ns_model_2,posterior_mean_ps_model_2)
+
+true_samps = rbinom(length(fgm_sim_mean),round(mean(lebron_GSW_dat$FGA)),mean(lebron_GSW_dat$FG_PCT))
+df = data.frame(Poisson = y_model_2,
+                True = true_samps)
+
+df_long <- df |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "group",
+    values_to = "value"
+  )
+
+player_name = unique(starting_dat$PLAYER_NAME[starting_dat$PLAYER_ID == player_id])
+opp_team_name = starting_dat$TEAM_ABBREVIATION[starting_dat$TEAM_ID == opp_team_id][1]
+
+title = paste("Model comparison for", player_name, " against ", opp_team_name)
+plot_3.3.2 = df_long |>
+  ggplot(aes(x = value, fill = group)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = title,
+    x = "Value",
+    y = "Count",
+    fill = "Group"
+  ) +
+  xlim(5,25) +
+  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
+  theme_minimal()
+
+ggsave("images/3.3.2.png", plot = plot_3.3.2, dpi = 300)
+```
+
+
+### 3.3.3
+
+```{r, echo = FALSE}
+# running mcmc
+
+### Traceplots
+r<- MCMC_model_3$value[which(MCMC_model_3$parameter=="r")]
+theta<- MCMC_model_3$value[which(MCMC_model_3$parameter=="theta")]
+n1<- round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")])
+n2<- round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")])
+n3<- round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")])
+p1<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")]
+p2<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")]
+p3<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")]
+
+#Dont do this!
+# posterior_mean_rs = round(mean(r))
+# posterior_mean_thetas = mean(theta)
+
+
+### I don't think this is actually the Predictive Posterior
+posterior_mean_ps_model_3<- apply(data.frame(p1,p2,p3),1,mean)
+posterior_mean_ns_model_3<- round(apply(data.frame(n1,n2,n3),1,mean))
+# making the y's using our posterior sample
+y_model_3<- rbinom(n_iter,posterior_mean_ns_model_3,posterior_mean_ps_model_3)
+
+true_samps = rbinom(length(fgm_sim_mean),round(mean(lebron_GSW_dat$FGA)),mean(lebron_GSW_dat$FG_PCT))
+df = data.frame(NegBinom = y_model_3,
+                True = true_samps)
+
+df_long <- df |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "group",
+    values_to = "value"
+  )
+
+player_name = unique(starting_dat$PLAYER_NAME[starting_dat$PLAYER_ID == player_id])
+opp_team_name = starting_dat$TEAM_ABBREVIATION[starting_dat$TEAM_ID == opp_team_id][1]
+
+title = paste("Model comparison for", player_name, " against ", opp_team_name)
+plot_3.3.3 = df_long |>
+  ggplot(aes(x = value, fill = group)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = title,
+    x = "Value",
+    y = "Count",
+    fill = "Group"
+  ) +
+  xlim(5,25) +
+  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
+  theme_minimal()
+
+ggsave("images/3.3.3.png", plot = plot_3.3.3, dpi = 300)
+```
+
+## 3.4 
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+# TODO
+# Load necessary package
+library(knitr)
+
+# Summary statistics for DRTG proxy
+drtg_summary <- summary(drtg$DRTG_proxy)
+drtg_table <- data.frame(Statistic = names(drtg_summary), Value = as.numeric(drtg_summary))
+
+# Display table using kable
+kable(drtg_table, caption = "Summary Statistics for Team Defensive Rating (DRTG Proxy)")
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# FIXED SENSITIVITY ANALYSIS: using uncentered DRTG values
+
+# Pull uncentered DRTG for GSW and mean DRTG
+drtg_gsw_uncentered <- drtg |> filter(TEAM_ID == 1610612744) |> pull(DRTG_proxy)
+mean_drtg_uncentered <- mean(drtg$DRTG_proxy)
+
+# Function to simulate FGM for given gamma
+simulate_fgm_given_gamma <- function(p_samples, gamma_val, drtg_gsw, mean_drtg, n_fixed) {
+  # Adjust probability for opponent DRTG
+  p_adj <- p_samples * exp(gamma_val * (drtg_gsw - mean_drtg))
+  p_adj <- pmin(p_adj, 1)  # Ensure valid probability
+  rbinom(length(p_adj), size = n_fixed, prob = p_adj)
+}
+
+# Gamma values to test
+gamma_values <- c(0, 0.01, 0.1)
+gamma_labels <- c(expression(gamma == 0), expression(gamma == 0.01), expression(gamma == 0.1))
+
+# Simulate FGM under each gamma
+fgm_list <- lapply(gamma_values, function(g) {
+  simulate_fgm_given_gamma(p_samples, gamma_val = g, 
+                           drtg_gsw = drtg_gsw_uncentered,
+                           mean_drtg = mean_drtg_uncentered,
+                           n_fixed = 18)
+})
+
+
+png("images/3.4b.png" )
+par(mfrow = c(3, 1), mar = c(4, 4, 1, 1), oma = c(1, 1, 3, 1))
+
+for (i in 1:3) {
+  hist(fgm_list[[i]],
+       breaks = 15,
+       col = c("lightblue", "lightgreen", "lightcoral")[i],
+       xlab = "Field Goals Made",
+       main = "",
+       xlim = c(0, max(unlist(fgm_list))),
+       border = "white")
+  abline(v = mean(fgm_list[[i]]), col = "red", lwd = 2)
+  mtext(paste0("Posterior Predictive FGM: ", c("gamma = 0", "gamma = 0.01", "gamma = 0.1")[i]),
+        side = 3, line = 0.5, font = 2, cex = 1.1)
+}
+```
+
+# 4 Results
+
+### 4.1.1
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# LeBron Estimated FG% by Opponent Team using n_mean
+plot_4.1.1 = ggplot(p_ik_summary, aes(x = reorder(as.factor(OPP_TEAM_ID), -p_ik_mean), y = p_ik_mean)) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_errorbar(aes(ymin = p_ik_lower, ymax = p_ik_upper), width = 0.2, color = "steelblue") +
+  labs(title = "LeBron's Estimated FG% by Opponent Team", x = "Opponent Team ID", y = "Posterior Mean FG%") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), plot.title = element_text(hjust = 0.5))
+
+ggsave("images/4.1.1.png", plot = plot_4.1.1, dpi = 300)
+```
+
+## 4.2 MCMC Diagnostics
+
+### 4.2.1 Model 1
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+png("images/4.2.1a.png" )
+par(mfrow = c(3, 2), mar = c(4, 4, 2, 1))
+for (i in 1:3) {
+  chain <- chains[[i]]
+  plot(chain, type = "l", main = paste("Traceplot: Chain", i), ylab = "p", xlab = "Iteration")
+  acf(chain, main = paste("ACF: Chain", i), lag.max = 40)
+}
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+png("images/4.2.1b.png" )
+par(mfrow = c(1, 1))
+plot(cumsum(chains[[1]]) / seq_along(chains[[1]]), type = "l", col = "blue", ylim = c(0.4, 0.7), ylab = "Running Mean", xlab = "Iteration")
+lines(cumsum(chains[[2]]) / seq_along(chains[[2]]), col = "red")
+lines(cumsum(chains[[3]]) / seq_along(chains[[3]]), col = "green")
+legend("bottomright", legend = c("Chain 1", "Chain 2", "Chain 3"), col = c("blue", "red", "green"), lty = 1)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# TODO what to do about this?
+print(paste("ESS of model 1 Max is: " , round(effectiveSize(fgm_sim_max))))
+print(paste("ESS of model 1 Median is: " , round(effectiveSize(fgm_sim_median))))
+print(paste("ESS of model 1 Mean is: " , round(effectiveSize(fgm_sim_mean))))
+```
+
+### 4.2.1 Model 2
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+### Traceplots
+lambda<- MCMC_model_2$value[which(MCMC_model_2$parameter=="lambda")]
+n1<- round(MCMC_model_2$value[which(MCMC_model_2$parameter=="n[1]")])
+n2<- round(MCMC_model_2$value[which(MCMC_model_2$parameter=="n[2]")])
+n3<- round(MCMC_model_2$value[which(MCMC_model_2$parameter=="n[3]")])
+p1<- MCMC_model_2$value[which(MCMC_model_2$parameter=="p[1]")]
+p2<- MCMC_model_2$value[which(MCMC_model_2$parameter=="p[2]")]
+p3<- MCMC_model_2$value[which(MCMC_model_2$parameter=="p[3]")]
+len = length(lambda)
+mini = 2000
+
+png("images/4.2.1c.png" )
+par(mfrow=c(3,3))
+plot(lambda,type="l",main="lambda")
+abline(h=mean(lambda[len-mini:len]), col='red', lwd=2)
+plot(n1,type="l",main="n[1]")
+abline(h=mean(n1[len-mini:len]), col='red', lwd=2)
+plot(n2,type="l",main="n[2]")
+abline(h=mean(n2[len-mini:len]), col='red', lwd=2)
+plot(n3,type="l",main="n[3]")
+abline(h=mean(n3[len-mini:len]), col='red', lwd=2)
+plot(p1,type="l",main="p[1]")
+abline(h=mean(p1[len-mini:len]), col='red', lwd=2)
+plot(p2,type="l",main="p[2]")
+abline(h=mean(p2[len-mini:len]), col='red', lwd=2)
+plot(p3,type="l",main="p[3]")
+abline(h=mean(p3[len-mini:len]), col='red', lwd=2)
+
+#Prepping data
+
+# TODO ESS prints?
+
+burnin= 1000
+
+posterior_mean_ns <- round(apply(data.frame(n1,n2,n3),1,mean))
+posterior_mean_ps <- apply(data.frame(p1,p2,p3),1,mean)
+model_2_samps = rbinom(n_iter,posterior_mean_ns,posterior_mean_ps)
+
+print(paste("ESS of model 2 is: " , round(effectiveSize(model_2_samps))))
+```
+
+### 4.2.2 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+### Traceplots
+
+# plots of the raw samples without removing burnin
+png("images/4.2.2a.png" )
+par(mfrow=c(3,3))
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="r")],type="l",main="r",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="theta")],type="l",main="theta",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")],type="l",main="p1",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")],type="l",main="p2",ylab="value")
+plot(MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")],type="l",main="p3",ylab="value")
+plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")]),type="l",main="n[1]",ylab="value")
+plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")]),type="l",main="n[2]",ylab="value")
+plot(round(MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")]),type="l",main="n[3]",ylab="value")
+
+p1_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")][burnin:n_iter]
+p2_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")][burnin:n_iter]
+p3_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")][burnin:n_iter]
+n1_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")][burnin:n_iter]
+n2_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")][burnin:n_iter]
+n3_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")][burnin:n_iter]
+
+
+posterior_mean_ns <- round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
+posterior_mean_ps <- apply(data.frame(p1_culled,p2_culled,p3_culled),1,mean)
+model_3_samps = rbinom(n_iter,posterior_mean_ns,posterior_mean_ps)
+
+
+print(paste("ESS of model 3 is: " , round(effectiveSize(model_3_samps))))
+```
+
+### 4.3.1 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+n<-lebron_GSW_dat$FGA    # you would use a different player's previously observed n's here
+third<- prod((sqrt(pi)*(2^(1-n))/5)*(((3-2*n)*gamma(n+1)/gamma(n-0.5))+(4*(n-3)*gamma((2*n)+1)/gamma((2*n)-0.5))))
+second<-(prod(gamma(n+1/2)/factorial(n)))
+sumDenominatorThing<- 1 + second + third
+BFmodel_1<- 1/sumDenominatorThing
+BFmodel_2<- second/sumDenominatorThing
+BFmodel_3<- third
+BFmodel_1
+BFmodel_2
+BFmodel_3
+```
+
+### 4.3.2
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+burnin= 1000
+true_samps = rbinom(length(fgm_sim_mean),round(mean(lebron_GSW_dat$FGA)),mean(lebron_GSW_dat$FG_PCT))
+df = data.frame(Mean = fgm_sim_mean,
+                Median= fgm_sim_median,
+                Max = fgm_sim_max,
+                True = true_samps)
+
+df_long <- df |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "group",
+    values_to = "value"
+  )
+
+player_name = unique(starting_dat$PLAYER_NAME[starting_dat$PLAYER_ID == player_id])
+opp_team_name = starting_dat$TEAM_ABBREVIATION[starting_dat$TEAM_ID == opp_team_id][1]
+
+title = paste("Model comparison for", player_name, " against ", opp_team_name)
+plot_4.3.2a = df_long |>
+  ggplot(aes(x = value, fill = group)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = title,
+    x = "Value",
+    y = "Count",
+    fill = "Group"
+  ) +
+  xlim(5,25) +
+  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
+  theme_minimal()
+
+ggsave("images/4.3.2a.png", plot = plot_4.3.2a, dpi = 300)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+#Prepping data
+
+p1_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[1]")][burnin:n_iter]
+p2_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[2]")][burnin:n_iter]
+p3_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="p[3]")][burnin:n_iter]
+n1_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[1]")][burnin:n_iter]
+n2_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[2]")][burnin:n_iter]
+n3_culled<- MCMC_model_3$value[which(MCMC_model_3$parameter=="n[3]")][burnin:n_iter]
+
+
+posterior_mean_ns <- round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
+posterior_mean_ps <- apply(data.frame(p1_culled,p2_culled,p3_culled),1,mean)
+model_3_samps = rbinom(length(fgm_sim_max),posterior_mean_ns,posterior_mean_ps)
+df = data.frame(Max = fgm_sim_max,
+                Poisson = model_2_samps,
+                NegBinom = model_3_samps,
+                True = true_samps)
+
+df_long <- df |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "group",
+    values_to = "value"
+  )
+
+player_name = unique(starting_dat$PLAYER_NAME[starting_dat$PLAYER_ID == player_id])
+opp_team_name = starting_dat$TEAM_ABBREVIATION[starting_dat$TEAM_ID == opp_team_id][1]
+
+title = paste("Model comparison for", player_name, " against ", opp_team_name)
+plot_4.3.2b = df_long |>
+  ggplot(aes(x = value, fill = group)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = title,
+    x = "Value",
+    y = "Count",
+    fill = "Group"
+  ) +
+  xlim(5,25) +
+  # geom_vline(xintercept = mean(model_1_max_samps), color = "red", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_2_samps), color = "green", linetype = "dotted", size = 1) +
+  # geom_vline(xintercept = mean(model_3_samps), color = "blue", linetype = "dotted", size = 1) +
+  theme_minimal()
+ggsave("images/4.3.2b.png", plot = plot_4.3.2b, dpi = 300)
+``` 
+
+```{r}
+#I wrote this as a function because otherwise it literally doubled the length of my r file, as a side effect it automatically makes the graphs when you call the function, not sure if that's helpful or a hinderance TBH
+# n_sim is the number of replicated y's we want -- most groups did 100 -- DO NOT USE A BIGGER NUMBER
+# precision_parameter specifies how close the mean and variance have to be for us to say "they're close enough" I have no reason for picking 2
+# player_observed_y is the FGM for player i against team k
+# posterior_ns is the sampled n's VECTOR from the gibbs samplers (or in model 1, the single value n is fixed at)
+# posterior_ps is the sampled p's VECTOR from the gibbs sampler
+posteriorPredictiveCheckingFn<- function(n_sim=100,precision_parameter=2,player_observed_y,posterior_ns,posterior_ps){
+  y<-player_observed_y # making my life easier by shortening this name
+  if (length(posterior_ns) == 1){
+    posterior_ns<- rep(posterior_ns,length(posterior_ps))
+  }
+  n_PPD<- length(y)
+  observed_mean<- mean(y)
+  observed_var<- var(y)
+  y_rep<- matrix(NA, nrow=n_PPD, ncol=n_sim)
+  for (i in 1:n_sim) {
+    y_rep[,i]<- rbinom(n_PPD,posterior_ns[i],posterior_ps[i])
+  }
+  mean_VS_var_tally<-c()
+  bayes_p_val_mean<-c()
+  bayes_p_val_var<-c()
+  mean_y<- c()
+  var_y<- c()
+  for (i in 1:n_sim) {
+    # gets means & variances for histogram & p-value
+    mean_y[i]<-mean(y_rep[,i])
+    var_y[i]<- var(y_rep[,i])
+    # finds proportion of times when the mean = variance
+    if (abs(mean_y[i] - var_y[i]) <= precision_parameter){
+      mean_VS_var_tally[i]<- 1
+    }else{
+      mean_VS_var_tally[i]<- 0
+    }
+    #calculates bayes p-value for mean
+    if (abs(mean_y[i]) <= observed_mean){
+      bayes_p_val_mean[i]<- 1
+    }else{
+      bayes_p_val_mean[i]<- 0
+    }
+    #calculates bayes p-value for variance
+    if (abs(var_y[i]) <= observed_var){
+      bayes_p_val_var[i]<- 1
+    }else{
+      bayes_p_val_var[i]<- 0
+    }
+  }
+  # PP check histograms
+  par(mfrow=c(1,2))
+  hist(mean_y, xlab="mean(FGM)",main=paste("PP check for mean: observed data and replication data \n Bayesian P-value = ",mean(bayes_p_val_mean), sep=""))
+  abline(v=observed_mean, col="red") #adds the observed mean
+  legend("topright", "observed", fill="red") #sometimes overwrites too much of the graph
+  hist(var_y, xlab="var(FGM)",main=paste("PP check for variance: observed data and replication data \n Bayesian P-value = ",mean(bayes_p_val_var), sep=""))
+  abline(v=observed_var, col="red") #adds the observed mean
+  legend("topright", "observed", fill="red") #sometimes overwrites too much of the graph
+  
+  #density comparison plot
+  par(mfrow=c(1,1))
+  plot(density(y),xlim=c(5,25),ylim=c(0,1)) # plots the estimated kernel denity for lebron's observed
+  for (i in 1:n_sim){
+    points(density(y_rep[,i]),type="l",col="lightblue")
+  }
+  points(density(y),type="l") # puts lebron's back on top so we can see it
+  legend("topright","observed",fill="black")
+  
+  # p-values
+  print(c(paste("proportion of samples where mean = variance:",mean(mean_VS_var_tally),sep=" "),
+          paste("bayes p-value for mean:",mean(bayes_p_val_mean),sep=" "),
+          paste("bayes p-value for variance:",mean(bayes_p_val_var),sep=" ")
+          ))
+  return(data.frame(mean_VS_var_proportion = mean(mean_VS_var_tally),
+                    bayes_Pvalue_for_mean = mean(bayes_p_val_mean),
+                    bayes_Pvalue_for_variance = mean(bayes_p_val_var)
+                    ))
+}
+
+
+# model 1, mean n
+posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,round(mean(lebron_GSW_dat$FGA)),p_ik_gsw)
+
+# model 1, median n
+posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,median(lebron_GSW_dat$FGA),p_ik_gsw)
+
+# model 1, max n
+posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,max(lebron_GSW_dat$FGA),p_ik_gsw)
+
+# model 2
+#recall posterior_mean_ns_model_2 is: round(apply(data.frame(n1,n2,n3),1,mean))
+#recall posterior_mean_ps_model_2 is: apply(data.frame(p1,p2,p3),1,mean)
+posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,posterior_mean_ns_model_2,posterior_mean_ps_model_2)
+
+# model 3
+#recall posterior_mean_ns_model_3 is: round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
+#recall posterior_mean_ps_model_3 is: apply(data.frame(p1_culled,p2_culled,p3_culled),1,mean)
+posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,posterior_mean_ns_model_3,posterior_mean_ps_model_3)
+```
