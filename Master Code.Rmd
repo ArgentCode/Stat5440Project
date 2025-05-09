@@ -676,7 +676,7 @@ plot_4.1.1 = ggplot(p_ik_summary, aes(x = reorder(as.factor(OPP_TEAM_ID), -p_ik_
   geom_point(color = "steelblue", size = 2) +
   geom_errorbar(aes(ymin = p_ik_lower, ymax = p_ik_upper), width = 0.2, color = "steelblue") +
   labs(title = "LeBron's Estimated FG% by Opponent Team", x = "Opponent Team ID", y = "Posterior Mean FG%") +
-  theme_minimal() +
+  # theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1), plot.title = element_text(hjust = 0.5))
 
 ggsave("images/4.1.1.png", plot = plot_4.1.1, dpi = 300)
@@ -892,6 +892,8 @@ plot_4.3.2b = df_long |>
 ggsave("images/4.3.2b.png", plot = plot_4.3.2b, dpi = 300)
 ``` 
 
+### 4.3.3
+
 ```{r}
 #I wrote this as a function because otherwise it literally doubled the length of my r file, as a side effect it automatically makes the graphs when you call the function, not sure if that's helpful or a hinderance TBH
 # n_sim is the number of replicated y's we want -- most groups did 100 -- DO NOT USE A BIGGER NUMBER
@@ -962,29 +964,60 @@ posteriorPredictiveCheckingFn<- function(n_sim=100,precision_parameter=2,player_
           paste("bayes p-value for mean:",mean(bayes_p_val_mean),sep=" "),
           paste("bayes p-value for variance:",mean(bayes_p_val_var),sep=" ")
           ))
-  return(data.frame(mean_VS_var_proportion = mean(mean_VS_var_tally),
-                    bayes_Pvalue_for_mean = mean(bayes_p_val_mean),
-                    bayes_Pvalue_for_variance = mean(bayes_p_val_var)
+  return(list(mean_VS_var_proportion = mean(mean_VS_var_tally),
+              bayes_Pvalue_for_mean = mean(bayes_p_val_mean),
+              bayes_Pvalue_for_variance = mean(bayes_p_val_var),
+              mean_y = mean_y,
+              var_y = var_y,
+              y = y,
+              y_rep = y_rep,
+              bayes_p_val_mean = bayes_p_val_mean,
+              bayes_p_val_var = bayes_p_val_var
                     ))
 }
 
+n_sim = 100
 
 # model 1, mean n
-posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,round(mean(lebron_GSW_dat$FGA)),p_ik_gsw)
+posteriorPredictiveCheckingFn(n_sim,2, lebron_GSW_dat$FGM,round(mean(lebron_GSW_dat$FGA)),p_ik_gsw)
 
 # model 1, median n
-posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,median(lebron_GSW_dat$FGA),p_ik_gsw)
+posteriorPredictiveCheckingFn(n_sim,2, lebron_GSW_dat$FGM,median(lebron_GSW_dat$FGA),p_ik_gsw)
 
 # model 1, max n
-posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,max(lebron_GSW_dat$FGA),p_ik_gsw)
+results = posteriorPredictiveCheckingFn(n_sim,2, lebron_GSW_dat$FGM,max(lebron_GSW_dat$FGA),p_ik_gsw)
+
+png("images/4.3.3a.png")
+par(mfrow=c(1,2))
+hist(results$mean_y, xlab="mean(FGM)",
+     main=paste("PP check for mean: observed data and replication data \n Bayesian P-value = ",
+                mean(results$bayes_p_val_mean), sep=""))
+abline(v=mean(results$y), col="red") #adds the observed mean
+legend("topright", "observed", fill="red") #sometimes overwrites too much of the graph
+hist(results$var_y, xlab="var(FGM)",
+     main=paste("PP check for variance: observed data and replication data \n Bayesian P-value = ",
+                mean(results$bayes_p_val_var), sep=""))
+abline(v=var(results$y), col="red") #adds the observed mean
+legend("topright", "observed", fill="red") #sometimes overwrites too much of the graph
+dev.off()
+
+png("images/4.3.3b.png")
+par(mfrow=c(1,1))
+  plot(density(results$y),xlim=c(5,25),ylim=c(0,1)) # plots the estimated kernel denity for lebron's observed
+  for (i in 1:n_sim){
+    points(density(results$y_rep[,i]),type="l",col="lightblue")
+  }
+  points(density(results$y),type="l") # puts lebron's back on top so we can see it
+  legend("topright","observed",fill="black")
+dev.off()
 
 # model 2
 #recall posterior_mean_ns_model_2 is: round(apply(data.frame(n1,n2,n3),1,mean))
 #recall posterior_mean_ps_model_2 is: apply(data.frame(p1,p2,p3),1,mean)
-posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,posterior_mean_ns_model_2,posterior_mean_ps_model_2)
+posteriorPredictiveCheckingFn(n_sim,2, lebron_GSW_dat$FGM,posterior_mean_ns_model_2,posterior_mean_ps_model_2)
 
 # model 3
 #recall posterior_mean_ns_model_3 is: round(apply(data.frame(n1_culled,n2_culled,n3_culled),1,mean))
 #recall posterior_mean_ps_model_3 is: apply(data.frame(p1_culled,p2_culled,p3_culled),1,mean)
-posteriorPredictiveCheckingFn(100,2, lebron_GSW_dat$FGM,posterior_mean_ns_model_3,posterior_mean_ps_model_3)
+posteriorPredictiveCheckingFn(n_sim,2, lebron_GSW_dat$FGM,posterior_mean_ns_model_3,posterior_mean_ps_model_3)
 ```
